@@ -1,7 +1,11 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { Box, Typography } from '@mui/material';
+import {
+  Box, Typography,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  TextField, Button, Tooltip,
+} from '@mui/material';
 import { useTranslation } from 'react-i18next';
-import { skillTreeRoot, SkillNode } from '../data/skillTree';
+import { skillTreeRoot as initialSkillTreeRoot, SkillNode } from '../data/skillTree';
 
 // ── Flat Anthracite Palette ──────────────────────────────────────────────────
 type PKey = 'root' | 'development' | 'research' | 'communication' | 'organisation' | 'default';
@@ -22,6 +26,12 @@ const CAT_KEYS: Record<string, PKey> = {
 
 const TREE_BG = '#1e2229';
 
+// ── Color picker swatches (stroke colors from palette + extras) ───────────────
+const COLOR_SWATCHES = [
+  '#e2b714', '#38bdf8', '#a78bfa', '#fb923c', '#4ade80',
+  '#f472b6', '#34d399', '#f87171', '#94a3b8', '#facc15',
+];
+
 // ── Geometry ─────────────────────────────────────────────────────────────────
 const D1 = 225;                    // root → category
 const D2 = 162;                    // category → sub
@@ -37,13 +47,13 @@ const VH = 900;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface NodeDatum {
-  id: string; labelKey: string;
+  id: string; labelKey: string; label?: string;
   x: number; y: number;
-  depth: number; colorKey: PKey;
+  depth: number; colorKey: PKey; colorOverride?: string;
 }
 interface EdgeDatum {
   x1: number; y1: number; x2: number; y2: number;
-  colorKey: PKey; parentId: string; childId: string;
+  colorKey: PKey; colorOverride?: string; parentId: string; childId: string;
 }
 
 // ── Full-tree layout ──────────────────────────────────────────────────────────
@@ -54,11 +64,11 @@ function buildLayout(root: SkillNode): { nodes: NodeDatum[]; edges: EdgeDatum[] 
   function walk(
     node: SkillNode, x: number, y: number, outAngle: number,
     depth: number, parentPos: { x: number; y: number } | null,
-    parentId: string | null, colorKey: PKey,
+    parentId: string | null, colorKey: PKey, colorOverride?: string,
   ) {
-    nodes.push({ id: node.id, labelKey: node.labelKey, x, y, depth, colorKey });
+    nodes.push({ id: node.id, labelKey: node.labelKey, label: node.label, x, y, depth, colorKey, colorOverride: node.colorOverride ?? colorOverride });
     if (parentId !== null && parentPos !== null)
-      edges.push({ x1: parentPos.x, y1: parentPos.y, x2: x, y2: y, colorKey, parentId, childId: node.id });
+      edges.push({ x1: parentPos.x, y1: parentPos.y, x2: x, y2: y, colorKey, colorOverride: node.colorOverride ?? colorOverride, parentId, childId: node.id });
 
     const children = node.children ?? [];
     if (!children.length) return;
@@ -68,17 +78,18 @@ function buildLayout(root: SkillNode): { nodes: NodeDatum[]; edges: EdgeDatum[] 
       children.forEach((child, i) => {
         const angle = (2 * Math.PI * i) / children.length - Math.PI / 2;
         const ck = (CAT_KEYS[child.id] ?? 'default') as PKey;
-        walk(child, D1 * Math.cos(angle), D1 * Math.sin(angle), angle, 1, pos, node.id, ck);
+        walk(child, D1 * Math.cos(angle), D1 * Math.sin(angle), angle, 1, pos, node.id, ck, child.colorOverride);
       });
     } else {
       const spread = depth === 1 ? SPREAD_L2 : SPREAD_L3;
       const dist   = depth === 1 ? D2 : D3;
+      const childColorOverride = node.colorOverride ?? colorOverride;
       children.forEach((child, i) => {
         const angle = children.length === 1
           ? outAngle
           : outAngle - spread / 2 + (i * spread) / (children.length - 1);
         walk(child, x + dist * Math.cos(angle), y + dist * Math.sin(angle),
-          angle, depth + 1, pos, node.id, colorKey);
+          angle, depth + 1, pos, node.id, colorKey, child.colorOverride ?? childColorOverride);
       });
     }
   }
@@ -109,7 +120,11 @@ interface SkillNodeElProps {
 
 function SkillNodeEl({ node, isFocused, isChild, onClick, label }: SkillNodeElProps) {
   const [hovered, setHovered] = useState(false);
-  const { stroke, fill, text } = PALETTE[node.colorKey];
+  const base = PALETTE[node.colorKey];
+  const stroke = node.colorOverride ?? base.stroke;
+  // derive fill/text from override: darken the override color for fill, lighten for text
+  const fill   = node.colorOverride ? `${node.colorOverride}22` : base.fill;
+  const text   = node.colorOverride ?? base.text;
   const r     = BASE_R[node.depth] ?? 22;
   const lines = wrapText(label);
   const fs    = [12, 11, 9.5, 8.5][node.depth] ?? 8.5;
@@ -155,7 +170,10 @@ function SkillNodeEl({ node, isFocused, isChild, onClick, label }: SkillNodeElPr
 export default function SkillTree() {
   const { t } = useTranslation();
 
-  const { nodes, edges } = useMemo(() => buildLayout(skillTreeRoot), []);
+  // ── Mutable tree state ──
+  const [treeRoot, setTreeRoot] = useState<SkillNode>(initialSkillTreeRoot);
+
+  const { nodes, edges } = useMemo(() => buildLayout(treeRoot), [treeRoot]);
   const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
 
   const [focusedId, setFocusedId] = useState<string>('root');
@@ -209,6 +227,46 @@ export default function SkillTree() {
   const handleSvgMouseUp = useCallback(() => {
     dragStartRef.current = null;
     setIsDragging(false);
+  }, []);
+
+  // ── Add-node dialog ──
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [newNodeTitle, setNewNodeTitle] = useState('');
+  const [newNodeColor, setNewNodeColor] = useState('#94a3b8');
+
+  const openAddDialog = useCallback(() => {
+    const focused = nodeMap.get(focusedId);
+    const parentColor = focused?.colorOverride ?? PALETTE[focused?.colorKey ?? 'default'].stroke;
+    setNewNodeTitle('');
+    setNewNodeColor(parentColor);
+    setDialogOpen(true);
+  }, [focusedId, nodeMap]);
+
+  const handleAddNodeConfirm = useCallback(() => {
+    if (!newNodeTitle.trim()) return;
+    const id = `custom_${Date.now()}`;
+    const newNode: SkillNode = {
+      id,
+      labelKey: `custom:${id}`,
+      label: newNodeTitle.trim(),
+      colorOverride: newNodeColor,
+    };
+
+    function insertChild(node: SkillNode): SkillNode {
+      if (node.id === focusedId) {
+        return { ...node, children: [...(node.children ?? []), newNode] };
+      }
+      if (!node.children?.length) return node;
+      return { ...node, children: node.children.map(insertChild) };
+    }
+
+    setTreeRoot(prev => insertChild(prev));
+    setFocusedId(id);
+    setDialogOpen(false);
+  }, [focusedId, newNodeTitle, newNodeColor]);
+
+  const handleAddNodeCancel = useCallback(() => {
+    setDialogOpen(false);
   }, []);
 
   const childrenIds = useMemo(() => {
@@ -272,7 +330,7 @@ export default function SkillTree() {
               isFocused={n.id === focusedId}
               isChild={childrenIds.has(n.id)}
               onClick={() => handleNodeClick(n)}
-              label={t(n.labelKey)}
+              label={n.label ?? t(n.labelKey)}
             />
           ))}
         </g>
@@ -338,7 +396,7 @@ export default function SkillTree() {
         position: 'absolute', bottom: 20, left: 24,
         display: 'flex', gap: 2.5, flexWrap: 'wrap', alignItems: 'center',
       }}>
-        {(skillTreeRoot.children ?? []).map(cat => {
+        {(treeRoot.children ?? []).map(cat => {
           const ck = (CAT_KEYS[cat.id] ?? 'default') as PKey;
           const color = PALETTE[ck].stroke;
           const isFocusedCat = focusedId === cat.id || childrenIds.has(cat.id);
@@ -361,6 +419,144 @@ export default function SkillTree() {
           );
         })}
       </Box>
+
+      {/* ── Command palette (bottom-right) ── */}
+      <Box sx={{
+        position: 'absolute', bottom: 20, right: 24,
+        width: 52, height: 52,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: '1px solid',
+        borderColor: focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
+        borderRadius: 1,
+        bgcolor: focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
+        transition: 'border-color 0.3s, background-color 0.3s',
+      }}>
+        <Tooltip
+          title={focusedId ? t('tree.addNode') : t('tree.selectNodeFirst')}
+          placement="top"
+          arrow
+        >
+          <Box
+            component="button"
+            onClick={focusedId ? openAddDialog : undefined}
+            disabled={!focusedId}
+            sx={{
+              all: 'unset',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 36, height: 36, borderRadius: '50%',
+              cursor: focusedId ? 'pointer' : 'not-allowed',
+              color: focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
+              fontSize: '1.5rem', lineHeight: 1,
+              transition: 'color 0.2s, background-color 0.2s',
+              '&:hover': focusedId ? {
+                color: '#fff',
+                bgcolor: 'rgba(255,255,255,0.08)',
+              } : {},
+            }}
+          >
+            +
+          </Box>
+        </Tooltip>
+      </Box>
+
+      {/* ── Add Node dialog ── */}
+      <Dialog
+        open={dialogOpen}
+        onClose={handleAddNodeCancel}
+        PaperProps={{
+          sx: {
+            bgcolor: '#252b34', color: '#e2e8f0',
+            border: '1px solid rgba(255,255,255,0.1)',
+            minWidth: 340,
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontSize: '0.95rem', fontWeight: 700, pb: 1 }}>
+          {t('tree.addNode')}
+        </DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: '8px !important' }}>
+          <TextField
+            autoFocus
+            label={t('tree.nodeTitle')}
+            value={newNodeTitle}
+            onChange={e => setNewNodeTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAddNodeConfirm(); }}
+            size="small"
+            fullWidth
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                color: '#e2e8f0',
+                '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.4)' },
+                '&.Mui-focused fieldset': { borderColor: newNodeColor },
+              },
+              '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.45)' },
+              '& .MuiInputLabel-root.Mui-focused': { color: newNodeColor },
+            }}
+          />
+          <Box>
+            <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.45)', mb: 1, display: 'block' }}>
+              {t('tree.nodeColor')}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              {COLOR_SWATCHES.map(color => (
+                <Box
+                  key={color}
+                  onClick={() => setNewNodeColor(color)}
+                  sx={{
+                    width: 24, height: 24, borderRadius: '50%',
+                    bgcolor: color,
+                    cursor: 'pointer',
+                    border: newNodeColor === color ? '2px solid #fff' : '2px solid transparent',
+                    boxShadow: newNodeColor === color ? `0 0 0 1px ${color}` : 'none',
+                    transition: 'transform 0.15s, border-color 0.15s',
+                    '&:hover': { transform: 'scale(1.2)' },
+                  }}
+                />
+              ))}
+              {/* custom hex input swatch */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Box
+                  component="input"
+                  type="color"
+                  value={newNodeColor}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewNodeColor(e.target.value)}
+                  sx={{
+                    width: 24, height: 24, borderRadius: '50%',
+                    border: 'none', padding: 0, cursor: 'pointer',
+                    background: 'none',
+                    '&::-webkit-color-swatch-wrapper': { padding: 0 },
+                    '&::-webkit-color-swatch': { borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)' },
+                  }}
+                />
+              </Box>
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            onClick={handleAddNodeCancel}
+            size="small"
+            sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: '#fff' } }}
+          >
+            {t('tree.cancel')}
+          </Button>
+          <Button
+            onClick={handleAddNodeConfirm}
+            disabled={!newNodeTitle.trim()}
+            size="small"
+            variant="contained"
+            sx={{
+              bgcolor: newNodeColor, color: '#111',
+              fontWeight: 700,
+              '&:hover': { bgcolor: newNodeColor, filter: 'brightness(1.15)' },
+              '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.3)' },
+            }}
+          >
+            {t('tree.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
     </Box>
   );

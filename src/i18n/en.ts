@@ -60,6 +60,12 @@ export const en = {
     },
     tree: {
       hint: 'Scroll or drag to navigate · Click a node to focus',
+      addNode: 'Add node',
+      nodeTitle: 'Title',
+      nodeColor: 'Color',
+      cancel: 'Cancel',
+      ok: 'Add',
+      selectNodeFirst: 'Select a node first',
     },
   },
 };

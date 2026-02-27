@@ -1,6 +1,8 @@
 export interface SkillNode {
   id: string;
-  labelKey: string; // i18n key under skillTree.*
+  labelKey: string;       // i18n key under skillTree.*, or 'custom:…' for user-added nodes
+  label?: string;         // raw display label for custom nodes (bypasses i18n)
+  colorOverride?: string; // hex color override for custom nodes
   children?: SkillNode[];
 }
 
