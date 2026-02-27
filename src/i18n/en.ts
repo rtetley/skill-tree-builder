@@ -59,7 +59,7 @@ export const en = {
       timeManagement: 'Time Mgmt',
     },
     tree: {
-      hint: 'Click any node to centre the view',
+      hint: 'Scroll or drag to navigate · Click a node to focus',
     },
   },
 };

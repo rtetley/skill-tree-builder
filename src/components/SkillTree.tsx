@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { Box, Typography } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { skillTreeRoot, SkillNode } from '../data/skillTree';
@@ -118,6 +118,7 @@ function SkillNodeEl({ node, isFocused, isChild, onClick, label }: SkillNodeElPr
 
   return (
     <g
+      data-node="true"
       transform={`translate(${node.x}, ${node.y})`}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
@@ -161,10 +162,53 @@ export default function SkillTree() {
   const [panX, setPanX] = useState(VW / 2);
   const [panY, setPanY] = useState(VH / 2);
 
+  // ── Node click: only focuses (enlarges) the node, no auto-pan ──
   const handleNodeClick = useCallback((node: NodeDatum) => {
     setFocusedId(node.id);
-    setPanX(VW / 2 - node.x);
-    setPanY(VH / 2 - node.y);
+  }, []);
+
+  // ── Scroll-to-pan (non-passive so we can preventDefault) ──
+  const svgRef = useRef<SVGSVGElement>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const sx = VW / rect.width;
+      const sy = VH / rect.height;
+      setPanX(prev => prev - e.deltaX * sx);
+      setPanY(prev => prev - e.deltaY * sy);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // ── Drag-to-pan ──
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
+
+  const handleSvgMouseDown = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    // Ignore clicks that land on a node circle/text (they have their own handler)
+    if ((e.target as Element).closest('[data-node]')) return;
+    dragStartRef.current = { mx: e.clientX, my: e.clientY, px: panX, py: panY };
+    setIsDragging(true);
+  }, [panX, panY]);
+
+  const handleSvgMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    if (!dragStartRef.current) return;
+    const el = svgRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const sx = VW / rect.width;
+    const sy = VH / rect.height;
+    setPanX(dragStartRef.current.px + (e.clientX - dragStartRef.current.mx) * sx);
+    setPanY(dragStartRef.current.py + (e.clientY - dragStartRef.current.my) * sy);
+  }, []);
+
+  const handleSvgMouseUp = useCallback(() => {
+    dragStartRef.current = null;
+    setIsDragging(false);
   }, []);
 
   const childrenIds = useMemo(() => {
@@ -194,16 +238,18 @@ export default function SkillTree() {
 
       {/* ── Full-screen SVG ── */}
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${VW} ${VH}`}
         preserveAspectRatio="xMidYMid meet"
-        style={{ width: '100%', height: '100%', display: 'block' }}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: isDragging ? 'grabbing' : 'grab' }}
+        onMouseDown={handleSvgMouseDown}
+        onMouseMove={handleSvgMouseMove}
+        onMouseUp={handleSvgMouseUp}
+        onMouseLeave={handleSvgMouseUp}
       >
         <rect width={VW} height={VH} fill={TREE_BG} />
 
-        <g style={{
-          transform: `translate(${panX}px, ${panY}px)`,
-          transition: 'transform 0.55s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
-        }}>
+        <g style={{ transform: `translate(${panX}px, ${panY}px)` }}>
           {/* Edges */}
           {edges.map((e, i) => {
             const { stroke } = PALETTE[e.colorKey];
