@@ -303,8 +303,9 @@ export default function SkillTree() {
   const [focusedId, setFocusedId] = useState<string>('root');
   const [panX, setPanX] = useState(VW / 2);
   const [panY, setPanY] = useState(VH / 2);
+  const [zoom, setZoom] = useState(1);
 
-  // ── Scroll-to-pan (non-passive so we can preventDefault) ──
+  // ── Scroll-to-zoom + trackpad horizontal pan (non-passive so we can preventDefault) ──
   const svgRef = useRef<SVGSVGElement>(null);
   useEffect(() => {
     const el = svgRef.current;
@@ -314,8 +315,22 @@ export default function SkillTree() {
       const rect = el.getBoundingClientRect();
       const sx = VW / rect.width;
       const sy = VH / rect.height;
-      setPanX(prev => prev - e.deltaX * sx);
-      setPanY(prev => prev - e.deltaY * sy);
+
+      // Two-finger horizontal swipe → pan horizontally
+      if (e.deltaX !== 0 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        setPanX(prev => prev - e.deltaX * sx);
+        return;
+      }
+
+      // Vertical scroll → zoom towards cursor
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      // Cursor position in SVG viewBox space
+      const vx = (e.clientX - rect.left) * sx;
+      const vy = (e.clientY - rect.top)  * sy;
+      // Adjust pan so the point under the cursor stays fixed
+      setPanX(prev => vx + (prev - vx) * factor);
+      setPanY(prev => vy + (prev - vy) * factor);
+      setZoom(prev => Math.max(0.15, Math.min(5, prev * factor)));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -496,11 +511,12 @@ export default function SkillTree() {
       nodeId: node.id,
       startMx: e.clientX,
       startMy: e.clientY,
-      svgScaleX: VW / rect.width,
-      svgScaleY: VH / rect.height,
+      // Convert screen pixels → content-space units (viewBox / zoom)
+      svgScaleX: VW / rect.width / zoom,
+      svgScaleY: VH / rect.height / zoom,
     };
     setNodeDragOffset({ dx: 0, dy: 0 });
-  }, [isMoveMode]);
+  }, [isMoveMode, zoom]);
 
   // ── Node click: always focuses the node; in move mode this picks the node to drag ──
   const handleNodeClick = useCallback((node: NodeDatum) => {
@@ -545,7 +561,7 @@ export default function SkillTree() {
       >
         <rect width={VW} height={VH} fill={TREE_BG} />
 
-        <g style={{ transform: `translate(${panX}px, ${panY}px)` }}>
+        <g style={{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})` }}>
           {(() => {
             // Compute once for both edges and nodes
             const draggedIds = nodeDragOffset ? getDraggedIds(focusedId) : null;
