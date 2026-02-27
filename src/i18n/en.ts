@@ -72,6 +72,10 @@ export const en = {
       cleanUp: 'Clean up layout',
       exportTree: 'Export tree',
       importTree: 'Import tree',
+      deleteNode: 'Delete node',
+      deleteConfirmTitle: 'Delete node?',
+      deleteConfirmBody: 'Delete "{{name}}" and all its children? This cannot be undone.',
+      deleteConfirm: 'Delete',
     },
   },
 };

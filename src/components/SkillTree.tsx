@@ -505,6 +505,38 @@ export default function SkillTree() {
     setDialogOpen(false);
   }, []);
 
+  // ── Delete node (with all descendants) ──────────────────────────────────
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  const handleDeleteRequest = useCallback(() => {
+    if (!focusedId || focusedId === treeRoot.id) return; // root cannot be deleted
+    setDeleteDialogOpen(true);
+  }, [focusedId, treeRoot.id]);
+
+  const handleDeleteConfirm = useCallback(() => {
+    const targetId = focusedId;
+    setTreeRoot(prev => {
+      function removeNode(node: SkillNode): SkillNode {
+        return { ...node, children: node.children?.filter(c => c.id !== targetId).map(removeNode) };
+      }
+      return removeNode(prev);
+    });
+    // Also remove frozen/seed positions for deleted subtree descendants
+    setFrozenPositions(prev => {
+      if (!prev) return prev;
+      const next = new Map(prev);
+      next.delete(targetId);
+      return next;
+    });
+    // Focus the root after deletion
+    setFocusedId(treeRoot.id);
+    setDeleteDialogOpen(false);
+  }, [focusedId, treeRoot.id]);
+
+  const handleDeleteCancel = useCallback(() => {
+    setDeleteDialogOpen(false);
+  }, []);
+
   // ── Clean-up: seed spring from current visual positions, then strip offsets ──
   // React 18 batches both setState calls → single re-render → buildLayout gets
   // the seed AND the stripped tree at the same time, so the spring settles from
@@ -972,6 +1004,46 @@ export default function SkillTree() {
             </Box>
           </Tooltip>
         </Box>
+
+        {/* Delete button — disabled for root node */}
+        {(() => {
+          const canDelete = !!focusedId && focusedId !== treeRoot.id;
+          return (
+            <Box sx={{
+              width: 52, height: 52,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '1px solid',
+              borderColor: canDelete ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.06)',
+              borderRadius: 1,
+              bgcolor: canDelete ? 'rgba(239,68,68,0.06)' : 'rgba(255,255,255,0.01)',
+              transition: 'border-color 0.3s, background-color 0.3s',
+            }}>
+              <Tooltip
+                title={!focusedId || focusedId === treeRoot.id ? t('tree.selectNodeFirst') : t('tree.deleteNode')}
+                placement="top" arrow
+              >
+                <Box
+                  component="button"
+                  onClick={canDelete ? handleDeleteRequest : undefined}
+                  disabled={!canDelete}
+                  sx={{
+                    all: 'unset',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 36, height: 36, borderRadius: '50%',
+                    cursor: canDelete ? 'pointer' : 'not-allowed',
+                    color: canDelete ? 'rgba(239,68,68,0.8)' : 'rgba(255,255,255,0.2)',
+                    transition: 'color 0.2s, background-color 0.2s',
+                    '&:hover': canDelete ? { color: '#ef4444', bgcolor: 'rgba(239,68,68,0.12)' } : {},
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path d="M3 5h12M7 5V3h4v2M8 8v6M10 8v6M4 5l1 10a1 1 0 001 1h6a1 1 0 001-1L14 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </Box>
+              </Tooltip>
+            </Box>
+          );
+        })()}
       </Box>
 
       {/* ── Move mode banner ── */}
@@ -1086,6 +1158,49 @@ export default function SkillTree() {
             }}
           >
             {t('tree.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Delete confirmation dialog ── */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={handleDeleteCancel}
+        PaperProps={{
+          sx: {
+            bgcolor: '#252b34', color: '#e2e8f0',
+            border: '1px solid rgba(239,68,68,0.25)',
+            minWidth: 320,
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontSize: '0.95rem', fontWeight: 700, pb: 1, color: '#fca5a5' }}>
+          {t('tree.deleteConfirmTitle')}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.65)' }}>
+            {t('tree.deleteConfirmBody', { name: nodeMap.get(focusedId ?? '')?.label ?? t((nodeMap.get(focusedId ?? '')?.labelKey) ?? '') })}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            onClick={handleDeleteCancel}
+            size="small"
+            sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: '#fff' } }}
+          >
+            {t('tree.cancel')}
+          </Button>
+          <Button
+            onClick={handleDeleteConfirm}
+            size="small"
+            variant="contained"
+            sx={{
+              bgcolor: '#ef4444', color: '#fff',
+              fontWeight: 700,
+              '&:hover': { bgcolor: '#dc2626' },
+            }}
+          >
+            {t('tree.deleteConfirm')}
           </Button>
         </DialogActions>
       </Dialog>
