@@ -51,10 +51,25 @@ interface EdgeDatum {
   colorKey: PKey; colorOverride?: string; parentId: string; childId: string;
 }
 
+// ── Import / Export ───────────────────────────────────────────────────────────
+interface ExportNode {
+  id: string;
+  label: string;
+  parentId: string | null;
+  colorOverride?: string;
+  position?: { x: number; y: number }; // final visual position (spring + manual offset)
+}
+interface SkillTreeExport {
+  treeId: string;
+  version: number;
+  nodes: ExportNode[]; // sorted by id for stable git diffs
+}
+
 // ── Full-tree layout (angular-budget, collision-aware) ────────────────────────
 function buildLayout(
   root: SkillNode,
   seedPositions?: Map<string, { x: number; y: number }>,
+  frozenPositions?: Map<string, { x: number; y: number }>,
 ): { nodes: NodeDatum[]; edges: EdgeDatum[] } {
   const GAP = 14; // minimum clearance between node edges (SVG units)
 
@@ -100,6 +115,41 @@ function buildLayout(
     });
   }
   initRadial(root, 0, 0, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI);
+
+  // ── Frozen positions: skip simulation entirely (used after import) ────────
+  // Nodes not present in frozenPositions (e.g. newly added since last export)
+  // retain their radial-init position and are settled by the spring below.
+  if (frozenPositions) {
+    const frozenIds = new Set<string>();
+    for (const { id } of rawNodes) {
+      if (id === root.id) continue;
+      const fp = frozenPositions.get(id);
+      if (fp) { pos.set(id, { x: fp.x, y: fp.y }); frozenIds.add(id); }
+    }
+    // Only run the spring for nodes that don't have a frozen position
+    const unfrozenNodes = rawNodes.filter(n => n.id !== root.id && !frozenIds.has(n.id));
+    if (unfrozenNodes.length === 0) {
+      // All positions are frozen — skip simulation entirely.
+      // positionOffset is still applied so manual moves after import are preserved.
+      const nodes: NodeDatum[] = rawNodes.map(info => {
+        const p  = pos.get(info.id)!;
+        const ox = info.positionOffset?.x ?? 0;
+        const oy = info.positionOffset?.y ?? 0;
+        return { id: info.id, labelKey: info.labelKey, label: info.label,
+          x: p.x + ox, y: p.y + oy, depth: info.depth, colorKey: info.colorKey, colorOverride: info.colorOverride };
+      });
+      const posMap  = new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }]));
+      const colorOf = new Map(rawNodes.map(n => [n.id, { colorKey: n.colorKey, colorOverride: n.colorOverride }]));
+      const edges: EdgeDatum[] = rawEdges.map(({ parentId, childId }) => {
+        const pa = posMap.get(parentId)!, pb = posMap.get(childId)!;
+        const c  = colorOf.get(childId)!;
+        return { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+          colorKey: c.colorKey, colorOverride: c.colorOverride, parentId, childId };
+      });
+      return { nodes, edges };
+    }
+    // Fall through to spring simulation for newly-added (unfrozen) nodes
+  }
 
   // Override warm-start with seed positions (supplied when cleanup is triggered from a
   // moved layout so the spring settles from the current visual state, not radial init)
@@ -293,10 +343,14 @@ export default function SkillTree() {
   // ── Mutable tree state ──
   const [treeRoot, setTreeRoot] = useState<SkillNode>(initialSkillTreeRoot);
   const [seedPositions, setSeedPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
+  const [frozenPositions, setFrozenPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
+  // Unique tree ID — stable across saves so version-controlled exports are diffable
+  const [treeId, setTreeId] = useState<string>(() => crypto.randomUUID());
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const { nodes, edges } = useMemo(
-    () => buildLayout(treeRoot, seedPositions ?? undefined),
-    [treeRoot, seedPositions],
+    () => buildLayout(treeRoot, seedPositions ?? undefined, frozenPositions ?? undefined),
+    [treeRoot, seedPositions, frozenPositions],
   );
   const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
 
@@ -458,6 +512,7 @@ export default function SkillTree() {
   const handleCleanup = useCallback(() => {
     // Capture current visual positions (positionOffset already baked into n.x/n.y)
     setSeedPositions(new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }])));
+    setFrozenPositions(null); // unfreeze so spring can re-settle
     setTreeRoot(prev => {
       function stripOffsets(node: SkillNode): SkillNode {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -467,6 +522,77 @@ export default function SkillTree() {
       return stripOffsets(prev);
     });
   }, [nodes]);
+
+  // ── Export: flat sorted JSON, one line per node for clean git diffs ──────
+  const handleExport = useCallback(() => {
+    const flatNodes: ExportNode[] = [];
+    function flatten(node: SkillNode, parentId: string | null) {
+      const label = node.label ?? t(node.labelKey);
+      const entry: ExportNode = { id: node.id, label, parentId };
+      if (node.colorOverride) entry.colorOverride = node.colorOverride;
+      // Save the final visual position (spring position + positionOffset already baked in)
+      // so import can warm-start the spring from exactly these coordinates.
+      const datum = nodeMap.get(node.id);
+      if (datum && parentId !== null) entry.position = { x: Math.round(datum.x), y: Math.round(datum.y) };
+      flatNodes.push(entry);
+      (node.children ?? []).forEach(child => flatten(child, node.id));
+    }
+    flatten(treeRoot, null);
+    // Sort by id so adding/removing a node produces a minimal one-line diff
+    flatNodes.sort((a, b) => a.id.localeCompare(b.id));
+    // Warn on duplicate labels (version-control friendliness depends on uniqueness)
+    const labelCounts = new Map<string, number>();
+    flatNodes.forEach(n => labelCounts.set(n.label, (labelCounts.get(n.label) ?? 0) + 1));
+    const dupes = [...new Set(flatNodes.filter(n => (labelCounts.get(n.label) ?? 0) > 1).map(n => n.label))];
+    if (dupes.length) console.warn('[skill-tree] Duplicate node labels detected:', dupes);
+
+    const payload: SkillTreeExport = { treeId, version: 1, nodes: flatNodes };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `skill-tree-${treeId.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [treeRoot, treeId, t, nodeMap]);
+
+  // ── Import: restore tree + layout from exported JSON ─────────────────────
+  const handleImportFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => {
+      try {
+        const payload = JSON.parse(evt.target?.result as string) as SkillTreeExport;
+        const nodeList = payload.nodes;
+
+        // Collect saved positions to warm-start the spring simulation
+        const seedMap = new Map<string, { x: number; y: number }>();
+        nodeList.forEach(n => { if (n.position) seedMap.set(n.id, n.position); });
+
+        function buildNode(id: string): SkillNode {
+          const en = nodeList.find(n => n.id === id)!;
+          const children = nodeList.filter(n => n.parentId === id).map(n => buildNode(n.id));
+          const node: SkillNode = { id: en.id, labelKey: `imported:${en.id}`, label: en.label, children };
+          if (en.colorOverride) node.colorOverride = en.colorOverride;
+          // No positionOffset: positions are passed as seedPositions instead
+          return node;
+        }
+
+        const rootExport = nodeList.find(n => n.parentId === null);
+        if (!rootExport) throw new Error('No root node found');
+        setTreeRoot(buildNode(rootExport.id));
+        setTreeId(payload.treeId);
+        setSeedPositions(null);
+        setFrozenPositions(seedMap.size > 0 ? seedMap : null);
+        setFocusedId(rootExport.id);
+      } catch (err) {
+        console.error('[skill-tree] Import failed:', err);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset so the same file can be re-imported
+  }, []);
 
   // ── Move-node mode (drag-based) ──
   const toggleMoveMode = useCallback(() => {
@@ -547,6 +673,8 @@ export default function SkillTree() {
 
   return (
     <Box sx={{ position: 'fixed', inset: 0, bgcolor: TREE_BG, overflow: 'hidden' }}>
+      {/* Hidden file input for importing a tree JSON */}
+      <input ref={importInputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportFile} />
 
       {/* ── Full-screen SVG ── */}
       <svg
@@ -698,8 +826,39 @@ export default function SkillTree() {
       {/* ── Command palette (bottom-right) ── */}
       <Box sx={{
         position: 'absolute', bottom: 20, right: 24,
-        display: 'flex', gap: 1,
+        display: 'flex', gap: 1, alignItems: 'center',
       }}>
+        {/* Import button */}
+        <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 1, bgcolor: 'rgba(255,255,255,0.04)' }}>
+          <Tooltip title={t('tree.importTree')} placement="top" arrow>
+            <Box component="button" onClick={() => importInputRef.current?.click()}
+              sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M9 11V3M9 3L5.5 6.5M9 3L12.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Export button */}
+        <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 1, bgcolor: 'rgba(255,255,255,0.04)' }}>
+          <Tooltip title={t('tree.exportTree')} placement="top" arrow>
+            <Box component="button" onClick={handleExport}
+              sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M9 3v8M9 11L5.5 7.5M9 11L12.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Separator */}
+        <Box sx={{ width: '1px', height: 32, bgcolor: 'rgba(255,255,255,0.1)', mx: 0.5 }} />
+
         {/* Clean-up button */}
         <Box sx={{
           width: 52, height: 52,

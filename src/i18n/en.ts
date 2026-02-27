@@ -70,6 +70,8 @@ export const en = {
       cancelMove: 'Cancel move',
       moveBanner: 'Click a node to select it, then drag to reposition (press M to exit)',
       cleanUp: 'Clean up layout',
+      exportTree: 'Export tree',
+      importTree: 'Import tree',
     },
   },
 };
