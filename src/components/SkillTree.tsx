@@ -460,6 +460,20 @@ export default function SkillTree() {
     nodeDragStartRef.current = null;
   }, []);
 
+  // Keyboard shortcut: 'm' toggles move mode
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'm' || e.key === 'M') {
+        // Don't fire when typing in an input / textarea / dialog
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
+        toggleMoveMode();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleMoveMode]);
+
   /** Collect IDs of the focused node and all its descendants */
   const getDraggedIds = useCallback((rootId: string): Set<string> => {
     const ids = new Set<string>();
@@ -488,12 +502,10 @@ export default function SkillTree() {
     setNodeDragOffset({ dx: 0, dy: 0 });
   }, [isMoveMode]);
 
-  // ── Node click: focus only (move mode handles drag, not click) ──
+  // ── Node click: always focuses the node; in move mode this picks the node to drag ──
   const handleNodeClick = useCallback((node: NodeDatum) => {
-    // In move mode clicks do nothing (drag is used instead)
-    if (isMoveMode) return;
     setFocusedId(node.id);
-  }, [isMoveMode]);
+  }, []);
 
   const childrenIds = useMemo(() => {
     const s = new Set<string>();

@@ -68,7 +68,7 @@ export const en = {
       selectNodeFirst: 'Select a node first',
       moveNode: 'Move node',
       cancelMove: 'Cancel move',
-      moveBanner: 'Drag the focused node to reposition it',
+      moveBanner: 'Click a node to select it, then drag to reposition (press M to exit)',
       cleanUp: 'Clean up layout',
     },
   },
