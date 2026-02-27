@@ -33,11 +33,6 @@ const COLOR_SWATCHES = [
 ];
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
-const D1 = 225;                    // root → category
-const D2 = 162;                    // category → sub
-const D3 = 108;                    // sub → leaf
-const SPREAD_L2 = Math.PI * 0.65;
-const SPREAD_L3 = Math.PI * 0.55;
 const BASE_R: Record<number, number> = { 0: 50, 1: 40, 2: 31, 3: 22 };
 const FOCUS_SCALE = 1.5;
 
@@ -56,45 +51,163 @@ interface EdgeDatum {
   colorKey: PKey; colorOverride?: string; parentId: string; childId: string;
 }
 
-// ── Full-tree layout ──────────────────────────────────────────────────────────
-function buildLayout(root: SkillNode): { nodes: NodeDatum[]; edges: EdgeDatum[] } {
-  const nodes: NodeDatum[] = [];
-  const edges: EdgeDatum[] = [];
+// ── Full-tree layout (angular-budget, collision-aware) ────────────────────────
+function buildLayout(
+  root: SkillNode,
+  seedPositions?: Map<string, { x: number; y: number }>,
+): { nodes: NodeDatum[]; edges: EdgeDatum[] } {
+  const GAP = 14; // minimum clearance between node edges (SVG units)
 
-  function walk(
-    node: SkillNode, x: number, y: number, outAngle: number,
-    depth: number, parentPos: { x: number; y: number } | null,
-    parentId: string | null, colorKey: PKey, colorOverride?: string,
+  // ── 1. Collect tree structure ──────────────────────────────────────────────
+  interface RawNode {
+    id: string; depth: number;
+    colorKey: PKey; colorOverride?: string;
+    labelKey: string; label?: string;
+    positionOffset?: { x: number; y: number };
+  }
+  const rawNodes: RawNode[] = [];
+  const rawEdges: { parentId: string; childId: string }[] = [];
+
+  function collect(
+    node: SkillNode, depth: number,
+    colorKey: PKey, inheritedOverride: string | undefined,
   ) {
-    nodes.push({ id: node.id, labelKey: node.labelKey, label: node.label, x, y, depth, colorKey, colorOverride: node.colorOverride ?? colorOverride });
-    if (parentId !== null && parentPos !== null)
-      edges.push({ x1: parentPos.x, y1: parentPos.y, x2: x, y2: y, colorKey, colorOverride: node.colorOverride ?? colorOverride, parentId, childId: node.id });
+    const co = node.colorOverride ?? inheritedOverride;
+    rawNodes.push({ id: node.id, depth, colorKey, colorOverride: co,
+      labelKey: node.labelKey, label: node.label, positionOffset: node.positionOffset });
+    (node.children ?? []).forEach(child => {
+      rawEdges.push({ parentId: node.id, childId: child.id });
+      const childCk = depth === 0 ? ((CAT_KEYS[child.id] ?? 'default') as PKey) : colorKey;
+      collect(child, depth + 1, childCk, co);
+    });
+  }
+  collect(root, 0, 'root', undefined);
 
-    const children = node.children ?? [];
-    if (!children.length) return;
-    const pos = { x, y };
+  const depthOf = new Map(rawNodes.map(n => [n.id, n.depth]));
 
-    if (depth === 0) {
-      children.forEach((child, i) => {
-        const angle = (2 * Math.PI * i) / children.length - Math.PI / 2;
-        const ck = (CAT_KEYS[child.id] ?? 'default') as PKey;
-        walk(child, D1 * Math.cos(angle), D1 * Math.sin(angle), angle, 1, pos, node.id, ck, child.colorOverride);
-      });
-    } else {
-      const spread = depth === 1 ? SPREAD_L2 : SPREAD_L3;
-      const dist   = depth === 1 ? D2 : D3;
-      const childColorOverride = node.colorOverride ?? colorOverride;
-      children.forEach((child, i) => {
-        const angle = children.length === 1
-          ? outAngle
-          : outAngle - spread / 2 + (i * spread) / (children.length - 1);
-        walk(child, x + dist * Math.cos(angle), y + dist * Math.sin(angle),
-          angle, depth + 1, pos, node.id, colorKey, child.colorOverride ?? childColorOverride);
-      });
+  // ── 2. Warm-start: radial init avoids symmetry traps ─────────────────────
+  const pos = new Map<string, { x: number; y: number }>();
+  function initRadial(node: SkillNode, x: number, y: number, sa: number, ea: number) {
+    pos.set(node.id, { x, y });
+    const ch = node.children ?? [];
+    if (!ch.length) return;
+    const d = depthOf.get(node.id) ?? 0;
+    const r = (BASE_R[d] ?? 22) + (BASE_R[d + 1] ?? 22) + GAP * 4;
+    ch.forEach((child, i) => {
+      const span = (ea - sa) / ch.length;
+      const mid  = sa + (i + 0.5) * span;
+      initRadial(child, x + r * Math.cos(mid), y + r * Math.sin(mid), mid - span / 2, mid + span / 2);
+    });
+  }
+  initRadial(root, 0, 0, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI);
+
+  // Override warm-start with seed positions (supplied when cleanup is triggered from a
+  // moved layout so the spring settles from the current visual state, not radial init)
+  if (seedPositions) {
+    for (const { id } of rawNodes) {
+      if (id === root.id) continue; // root is always pinned at origin
+      const seed = seedPositions.get(id);
+      if (seed) pos.set(id, { x: seed.x, y: seed.y });
     }
   }
 
-  walk(root, 0, 0, -Math.PI / 2, 0, null, null, 'root');
+  // ── 3. Force-directed spring simulation ───────────────────────────────────
+  const K_S         = 0.06;  // spring stiffness
+  const K_R         = 55000; // repulsion coefficient
+  const DAMP        = 0.82;  // velocity damping per step
+  const ITER        = 450;   // simulation steps
+  const MAX_EDGE_LEN = 260;  // hard max distance between parent and child (SVG units)
+
+  // Build a parent-lookup for the constraint-projection step
+  const parentOf = new Map(rawEdges.map(({ parentId, childId }) => [childId, parentId]));
+
+  const vel = new Map(rawNodes.map(({ id }) => [id, { vx: 0, vy: 0 }]));
+
+  for (let iter = 0; iter < ITER; iter++) {
+    const maxStep = 30 * (1 - iter / ITER) + 1; // cooling: large steps early, tiny steps late
+    const forces  = new Map(rawNodes.map(({ id }) => [id, { fx: 0, fy: 0 }]));
+
+    // Spring forces along edges (attractive when too far, repulsive when too close)
+    for (const { parentId, childId } of rawEdges) {
+      const pa = pos.get(parentId)!, pb = pos.get(childId)!;
+      const dx = pb.x - pa.x, dy = pb.y - pa.y;
+      const dist = Math.hypot(dx, dy) || 0.01;
+      const rA   = BASE_R[depthOf.get(parentId) ?? 3] ?? 22;
+      const rB   = BASE_R[depthOf.get(childId)  ?? 3] ?? 22;
+      const rest = rA + rB + GAP; // natural rest length = just touching + gap
+      const f    = K_S * (dist - rest);
+      const fx = f * dx / dist, fy = f * dy / dist;
+      if (parentId !== root.id) { forces.get(parentId)!.fx += fx; forces.get(parentId)!.fy += fy; }
+      forces.get(childId)!.fx -= fx;
+      forces.get(childId)!.fy -= fy;
+    }
+
+    // Repulsive force between every pair of nodes
+    for (let i = 0; i < rawNodes.length; i++) {
+      for (let j = i + 1; j < rawNodes.length; j++) {
+        const a = rawNodes[i].id, b = rawNodes[j].id;
+        const pa = pos.get(a)!, pb = pos.get(b)!;
+        const dx = pb.x - pa.x, dy = pb.y - pa.y;
+        const dist2 = dx * dx + dy * dy || 0.01;
+        const dist  = Math.sqrt(dist2);
+        const f  = K_R / dist2;
+        const fx = f * dx / dist, fy = f * dy / dist;
+        if (a !== root.id) { forces.get(a)!.fx -= fx; forces.get(a)!.fy -= fy; }
+        if (b !== root.id) { forces.get(b)!.fx += fx; forces.get(b)!.fy += fy; }
+      }
+    }
+
+    // Integrate velocities → positions
+    for (const { id } of rawNodes) {
+      if (id === root.id) continue; // root is pinned at origin
+      const v = vel.get(id)!, f = forces.get(id)!;
+      v.vx = (v.vx + f.fx) * DAMP;
+      v.vy = (v.vy + f.fy) * DAMP;
+      const p = pos.get(id)!;
+      p.x += Math.max(-maxStep, Math.min(maxStep, v.vx));
+      p.y += Math.max(-maxStep, Math.min(maxStep, v.vy));
+    }
+
+    // Constraint projection: clamp each child within MAX_EDGE_LEN of its parent
+    for (const { id } of rawNodes) {
+      if (id === root.id) continue;
+      const pid = parentOf.get(id);
+      if (!pid) continue;
+      const p = pos.get(id)!, pp = pos.get(pid)!;
+      const dx = p.x - pp.x, dy = p.y - pp.y;
+      const dist = Math.hypot(dx, dy) || 0.01;
+      if (dist > MAX_EDGE_LEN) {
+        const scale = MAX_EDGE_LEN / dist;
+        p.x = pp.x + dx * scale;
+        p.y = pp.y + dy * scale;
+        // zero out velocity component pushing further away
+        const v = vel.get(id)!;
+        const dot = v.vx * dx + v.vy * dy;
+        if (dot > 0) { v.vx -= dot * dx / (dist * dist); v.vy -= dot * dy / (dist * dist); }
+      }
+    }
+  }
+
+  // ── 4. Build NodeDatum / EdgeDatum  (positionOffset applied on top) ───────
+  const nodes: NodeDatum[] = rawNodes.map(info => {
+    const p  = pos.get(info.id)!;
+    const ox = info.positionOffset?.x ?? 0;
+    const oy = info.positionOffset?.y ?? 0;
+    return { id: info.id, labelKey: info.labelKey, label: info.label,
+      x: p.x + ox, y: p.y + oy,
+      depth: info.depth, colorKey: info.colorKey, colorOverride: info.colorOverride };
+  });
+
+  const posMap  = new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }]));
+  const colorOf = new Map(rawNodes.map(n => [n.id, { colorKey: n.colorKey, colorOverride: n.colorOverride }]));
+
+  const edges: EdgeDatum[] = rawEdges.map(({ parentId, childId }) => {
+    const pa = posMap.get(parentId)!, pb = posMap.get(childId)!;
+    const c  = colorOf.get(childId)!;
+    return { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+      colorKey: c.colorKey, colorOverride: c.colorOverride, parentId, childId };
+  });
+
   return { nodes, edges };
 }
 
@@ -115,14 +228,16 @@ function wrapText(text: string, maxChars = 10): string[] {
 // ── Skill node SVG element ────────────────────────────────────────────────────
 interface SkillNodeElProps {
   node: NodeDatum; isFocused: boolean; isChild: boolean;
+  isMoveMode: boolean; isDraggingNode: boolean;
+  dragDx: number; dragDy: number;
+  onNodeMouseDown: (e: React.MouseEvent, node: NodeDatum) => void;
   onClick: () => void; label: string;
 }
 
-function SkillNodeEl({ node, isFocused, isChild, onClick, label }: SkillNodeElProps) {
+function SkillNodeEl({ node, isFocused, isChild, isMoveMode, isDraggingNode, dragDx, dragDy, onNodeMouseDown, onClick, label }: SkillNodeElProps) {
   const [hovered, setHovered] = useState(false);
   const base = PALETTE[node.colorKey];
   const stroke = node.colorOverride ?? base.stroke;
-  // derive fill/text from override: darken the override color for fill, lighten for text
   const fill   = node.colorOverride ? `${node.colorOverride}22` : base.fill;
   const text   = node.colorOverride ?? base.text;
   const r     = BASE_R[node.depth] ?? 22;
@@ -130,19 +245,24 @@ function SkillNodeEl({ node, isFocused, isChild, onClick, label }: SkillNodeElPr
   const fs    = [12, 11, 9.5, 8.5][node.depth] ?? 8.5;
   const scale = isFocused ? FOCUS_SCALE : isChild ? 1.08 : hovered ? 1.1 : 1;
   const sw    = isFocused ? 2.5 : isChild ? 2 : hovered ? 1.5 : 1;
+  const cursor = isMoveMode ? (isFocused ? 'grab' : 'default') : 'pointer';
+
+  const tx = node.x + (isDraggingNode ? dragDx : 0);
+  const ty = node.y + (isDraggingNode ? dragDy : 0);
 
   return (
     <g
       data-node="true"
-      transform={`translate(${node.x}, ${node.y})`}
+      transform={`translate(${tx}, ${ty})`}
       onClick={onClick}
+      onMouseDown={isMoveMode && isFocused ? (e) => onNodeMouseDown(e, node) : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ cursor: 'pointer' }}
+      style={{ cursor }}
     >
       {isFocused && (
         <circle r={r * 1.7} fill="none" stroke={stroke} strokeWidth={1}
-          opacity={0.35} className="skill-pulse" />
+          opacity={0.35} className={isDraggingNode ? undefined : 'skill-pulse'} />
       )}
       <g style={{
         transformBox: 'fill-box', transformOrigin: 'center',
@@ -172,18 +292,17 @@ export default function SkillTree() {
 
   // ── Mutable tree state ──
   const [treeRoot, setTreeRoot] = useState<SkillNode>(initialSkillTreeRoot);
+  const [seedPositions, setSeedPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
 
-  const { nodes, edges } = useMemo(() => buildLayout(treeRoot), [treeRoot]);
+  const { nodes, edges } = useMemo(
+    () => buildLayout(treeRoot, seedPositions ?? undefined),
+    [treeRoot, seedPositions],
+  );
   const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
 
   const [focusedId, setFocusedId] = useState<string>('root');
   const [panX, setPanX] = useState(VW / 2);
   const [panY, setPanY] = useState(VH / 2);
-
-  // ── Node click: only focuses (enlarges) the node, no auto-pan ──
-  const handleNodeClick = useCallback((node: NodeDatum) => {
-    setFocusedId(node.id);
-  }, []);
 
   // ── Scroll-to-pan (non-passive so we can preventDefault) ──
   const svgRef = useRef<SVGSVGElement>(null);
@@ -213,7 +332,25 @@ export default function SkillTree() {
     setIsDragging(true);
   }, [panX, panY]);
 
+  // Declared here so handleSvgMouseMove/Up can reference them without TDZ errors
+  const [isMoveMode, setIsMoveMode] = useState(false);
+  const [nodeDragOffset, setNodeDragOffset] = useState<{ dx: number; dy: number } | null>(null);
+  const nodeDragStartRef = useRef<{
+    nodeId: string;
+    startMx: number; startMy: number;
+    svgScaleX: number; svgScaleY: number;
+  } | null>(null);
+
   const handleSvgMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    // Node drag takes priority
+    if (nodeDragStartRef.current) {
+      const { startMx, startMy, svgScaleX, svgScaleY } = nodeDragStartRef.current;
+      setNodeDragOffset({
+        dx: (e.clientX - startMx) * svgScaleX,
+        dy: (e.clientY - startMy) * svgScaleY,
+      });
+      return;
+    }
     if (!dragStartRef.current) return;
     const el = svgRef.current;
     if (!el) return;
@@ -225,9 +362,39 @@ export default function SkillTree() {
   }, []);
 
   const handleSvgMouseUp = useCallback(() => {
+    // Commit the node drag offset into the tree
+    if (nodeDragStartRef.current && nodeDragOffset) {
+      const { nodeId } = nodeDragStartRef.current;
+      const { dx, dy } = nodeDragOffset;
+      setTreeRoot(prev => {
+        // Collect all IDs that need offsetting: the dragged node + all its descendants
+        const draggedIds = new Set<string>();
+        function collectDescendants(node: SkillNode, capturing: boolean) {
+          if (capturing || node.id === nodeId) {
+            draggedIds.add(node.id);
+            node.children?.forEach(child => collectDescendants(child, true));
+          } else {
+            node.children?.forEach(child => collectDescendants(child, false));
+          }
+        }
+        collectDescendants(prev, false);
+
+        function applyOffset(node: SkillNode): SkillNode {
+          if (draggedIds.has(node.id)) {
+            const off = node.positionOffset ?? { x: 0, y: 0 };
+            return { ...node, positionOffset: { x: off.x + dx, y: off.y + dy }, children: node.children?.map(applyOffset) };
+          }
+          return { ...node, children: node.children?.map(applyOffset) };
+        }
+        return applyOffset(prev);
+      });
+      nodeDragStartRef.current = null;
+      setNodeDragOffset(null);
+      return;
+    }
     dragStartRef.current = null;
     setIsDragging(false);
-  }, []);
+  }, [nodeDragOffset]);
 
   // ── Add-node dialog ──
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -269,6 +436,65 @@ export default function SkillTree() {
     setDialogOpen(false);
   }, []);
 
+  // ── Clean-up: seed spring from current visual positions, then strip offsets ──
+  // React 18 batches both setState calls → single re-render → buildLayout gets
+  // the seed AND the stripped tree at the same time, so the spring settles from
+  // where the nodes currently are rather than jumping back to a radial init.
+  const handleCleanup = useCallback(() => {
+    // Capture current visual positions (positionOffset already baked into n.x/n.y)
+    setSeedPositions(new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }])));
+    setTreeRoot(prev => {
+      function stripOffsets(node: SkillNode): SkillNode {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { positionOffset: _p, ...rest } = node;
+        return { ...rest, children: node.children?.map(stripOffsets) };
+      }
+      return stripOffsets(prev);
+    });
+  }, [nodes]);
+
+  // ── Move-node mode (drag-based) ──
+  const toggleMoveMode = useCallback(() => {
+    setIsMoveMode(prev => !prev);
+    setNodeDragOffset(null);
+    nodeDragStartRef.current = null;
+  }, []);
+
+  /** Collect IDs of the focused node and all its descendants */
+  const getDraggedIds = useCallback((rootId: string): Set<string> => {
+    const ids = new Set<string>();
+    const queue = [rootId];
+    while (queue.length) {
+      const id = queue.pop()!;
+      ids.add(id);
+      edges.forEach(e => { if (e.parentId === id) queue.push(e.childId); });
+    }
+    return ids;
+  }, [edges]);
+
+  const handleNodeMouseDown = useCallback((e: React.MouseEvent, node: NodeDatum) => {
+    if (!isMoveMode) return;
+    e.stopPropagation(); // don't start a pan drag
+    const el = svgRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    nodeDragStartRef.current = {
+      nodeId: node.id,
+      startMx: e.clientX,
+      startMy: e.clientY,
+      svgScaleX: VW / rect.width,
+      svgScaleY: VH / rect.height,
+    };
+    setNodeDragOffset({ dx: 0, dy: 0 });
+  }, [isMoveMode]);
+
+  // ── Node click: focus only (move mode handles drag, not click) ──
+  const handleNodeClick = useCallback((node: NodeDatum) => {
+    // In move mode clicks do nothing (drag is used instead)
+    if (isMoveMode) return;
+    setFocusedId(node.id);
+  }, [isMoveMode]);
+
   const childrenIds = useMemo(() => {
     const s = new Set<string>();
     edges.forEach(e => { if (e.parentId === focusedId) s.add(e.childId); });
@@ -299,7 +525,7 @@ export default function SkillTree() {
         ref={svgRef}
         viewBox={`0 0 ${VW} ${VH}`}
         preserveAspectRatio="xMidYMid meet"
-        style={{ width: '100%', height: '100%', display: 'block', cursor: isDragging ? 'grabbing' : 'grab' }}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: (isMoveMode && nodeDragOffset) ? 'grabbing' : isMoveMode ? 'default' : isDragging ? 'grabbing' : 'grab' }}
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}
@@ -308,31 +534,52 @@ export default function SkillTree() {
         <rect width={VW} height={VH} fill={TREE_BG} />
 
         <g style={{ transform: `translate(${panX}px, ${panY}px)` }}>
-          {/* Edges */}
-          {edges.map((e, i) => {
-            const { stroke } = PALETTE[e.colorKey];
-            const toChild  = e.parentId === focusedId;
-            const toParent = e.childId  === focusedId;
-            const sw       = toChild ? 2 : toParent ? 1.2 : 0.8;
-            const opacity  = toChild ? 0.75 : toParent ? 0.35 : 0.15;
-            return (
-              <line key={i}
-                x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
-                stroke={stroke} strokeWidth={sw} strokeOpacity={opacity}
-                style={{ transition: 'stroke-opacity 0.35s ease, stroke-width 0.35s ease' }}
-              />
-            );
-          })}
+          {(() => {
+            // Compute once for both edges and nodes
+            const draggedIds = nodeDragOffset ? getDraggedIds(focusedId) : null;
+            const ddx = nodeDragOffset?.dx ?? 0;
+            const ddy = nodeDragOffset?.dy ?? 0;
+            return (<>
+              {/* Edges */}
+              {edges.map((e, i) => {
+                const stroke = e.colorOverride ?? PALETTE[e.colorKey].stroke;
+                const toChild  = e.parentId === focusedId;
+                const toParent = e.childId  === focusedId;
+                const sw       = toChild ? 2 : toParent ? 1.2 : 0.8;
+                const opacity  = toChild ? 0.75 : toParent ? 0.35 : 0.15;
+                const parentDragged = draggedIds?.has(e.parentId);
+                const childDragged  = draggedIds?.has(e.childId);
+                return (
+                  <line key={i}
+                    x1={e.x1 + (parentDragged ? ddx : 0)}
+                    y1={e.y1 + (parentDragged ? ddy : 0)}
+                    x2={e.x2 + (childDragged  ? ddx : 0)}
+                    y2={e.y2 + (childDragged  ? ddy : 0)}
+                    stroke={stroke} strokeWidth={sw} strokeOpacity={opacity}
+                    style={{ transition: 'stroke-opacity 0.35s ease, stroke-width 0.35s ease' }}
+                  />
+                );
+              })}
 
-          {/* Nodes */}
-          {nodes.map(n => (
-            <SkillNodeEl key={n.id} node={n}
-              isFocused={n.id === focusedId}
-              isChild={childrenIds.has(n.id)}
-              onClick={() => handleNodeClick(n)}
-              label={n.label ?? t(n.labelKey)}
-            />
-          ))}
+              {/* Nodes */}
+              {nodes.map(n => {
+                const isDraggingNode = !!(draggedIds?.has(n.id));
+                return (
+                  <SkillNodeEl key={n.id} node={n}
+                    isFocused={n.id === focusedId}
+                    isChild={childrenIds.has(n.id)}
+                    isMoveMode={isMoveMode}
+                    isDraggingNode={isDraggingNode}
+                    dragDx={ddx}
+                    dragDy={ddy}
+                    onNodeMouseDown={handleNodeMouseDown}
+                    onClick={() => handleNodeClick(n)}
+                    label={n.label ?? t(n.labelKey)}
+                  />
+                );
+              })}
+            </>);
+          })()}
         </g>
 
         <style>{`
@@ -423,41 +670,139 @@ export default function SkillTree() {
       {/* ── Command palette (bottom-right) ── */}
       <Box sx={{
         position: 'absolute', bottom: 20, right: 24,
-        width: 52, height: 52,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        border: '1px solid',
-        borderColor: focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
-        borderRadius: 1,
-        bgcolor: focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
-        transition: 'border-color 0.3s, background-color 0.3s',
+        display: 'flex', gap: 1,
       }}>
-        <Tooltip
-          title={focusedId ? t('tree.addNode') : t('tree.selectNodeFirst')}
-          placement="top"
-          arrow
-        >
-          <Box
-            component="button"
-            onClick={focusedId ? openAddDialog : undefined}
-            disabled={!focusedId}
-            sx={{
-              all: 'unset',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 36, height: 36, borderRadius: '50%',
-              cursor: focusedId ? 'pointer' : 'not-allowed',
-              color: focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
-              fontSize: '1.5rem', lineHeight: 1,
-              transition: 'color 0.2s, background-color 0.2s',
-              '&:hover': focusedId ? {
-                color: '#fff',
-                bgcolor: 'rgba(255,255,255,0.08)',
-              } : {},
-            }}
+        {/* Clean-up button */}
+        <Box sx={{
+          width: 52, height: 52,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: '1px solid rgba(255,255,255,0.15)',
+          borderRadius: 1,
+          bgcolor: 'rgba(255,255,255,0.04)',
+        }}>
+          <Tooltip title={t('tree.cleanUp')} placement="top" arrow>
+            <Box
+              component="button"
+              onClick={handleCleanup}
+              sx={{
+                all: 'unset',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: '50%',
+                cursor: 'pointer',
+                color: 'rgba(255,255,255,0.7)',
+                transition: 'color 0.2s, background-color 0.2s',
+                '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' },
+              }}
+            >
+              {/* Radial-burst / auto-layout icon */}
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <circle cx="9" cy="9" r="2" stroke="currentColor" strokeWidth="1.5"/>
+                <line x1="9" y1="1" x2="9" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="9" y1="13" x2="9" y2="17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="1" y1="9" x2="5" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="13" y1="9" x2="17" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="3.1" y1="3.1" x2="5.9" y2="5.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="12.1" y1="12.1" x2="14.9" y2="14.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="14.9" y1="3.1" x2="12.1" y2="5.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="5.9" y1="12.1" x2="3.1" y2="14.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Move button */}
+        <Box sx={{
+          width: 52, height: 52,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: '1px solid',
+          borderColor: isMoveMode ? 'rgba(255,255,255,0.5)' : focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
+          borderRadius: 1,
+          bgcolor: isMoveMode ? 'rgba(255,255,255,0.1)' : focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
+          transition: 'border-color 0.3s, background-color 0.3s',
+        }}>
+          <Tooltip
+            title={!focusedId ? t('tree.selectNodeFirst') : isMoveMode ? t('tree.cancelMove') : t('tree.moveNode')}
+            placement="top"
+            arrow
           >
-            +
-          </Box>
-        </Tooltip>
+            <Box
+              component="button"
+              onClick={focusedId ? toggleMoveMode : undefined}
+              disabled={!focusedId}
+              sx={{
+                all: 'unset',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: '50%',
+                cursor: focusedId ? 'pointer' : 'not-allowed',
+                color: isMoveMode ? '#fff' : focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
+                transition: 'color 0.2s, background-color 0.2s',
+                '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
+              }}
+            >
+              {/* Arrow-cross / move icon drawn in SVG */}
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M10 2 L10 18 M2 10 L18 10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                <path d="M10 2 L7.5 5 M10 2 L12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M10 18 L7.5 15 M10 18 L12.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 10 L5 7.5 M2 10 L5 12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M18 10 L15 7.5 M18 10 L15 12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Add button */}
+        <Box sx={{
+          width: 52, height: 52,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: '1px solid',
+          borderColor: focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
+          borderRadius: 1,
+          bgcolor: focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
+          transition: 'border-color 0.3s, background-color 0.3s',
+        }}>
+          <Tooltip
+            title={focusedId ? t('tree.addNode') : t('tree.selectNodeFirst')}
+            placement="top"
+            arrow
+          >
+            <Box
+              component="button"
+              onClick={focusedId ? openAddDialog : undefined}
+              disabled={!focusedId}
+              sx={{
+                all: 'unset',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: '50%',
+                cursor: focusedId ? 'pointer' : 'not-allowed',
+                color: focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
+                fontSize: '1.5rem', lineHeight: 1,
+                transition: 'color 0.2s, background-color 0.2s',
+                '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
+              }}
+            >
+              +
+            </Box>
+          </Tooltip>
+        </Box>
       </Box>
+
+      {/* ── Move mode banner ── */}
+      {isMoveMode && (
+        <Box sx={{
+          position: 'absolute', top: '50%', left: '50%',
+          transform: 'translate(-50%, -50%) translateY(-220px)',
+          pointerEvents: 'none',
+          bgcolor: 'rgba(255,255,255,0.07)',
+          border: '1px solid rgba(255,255,255,0.18)',
+          borderRadius: 1,
+          px: 2.5, py: 1,
+        }}>
+          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)', letterSpacing: 0.5 }}>
+            {t('tree.moveBanner')}
+          </Typography>
+        </Box>
+      )}
 
       {/* ── Add Node dialog ── */}
       <Dialog
