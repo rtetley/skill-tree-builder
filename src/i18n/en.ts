@@ -66,6 +66,10 @@ export const en = {
       cancel: 'Cancel',
       ok: 'Add',
       selectNodeFirst: 'Select a node first',
+      moveNode: 'Move node',
+      cancelMove: 'Cancel move',
+      moveBanner: 'Drag the focused node to reposition it',
+      cleanUp: 'Clean up layout',
     },
   },
 };
