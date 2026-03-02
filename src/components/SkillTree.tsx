@@ -341,7 +341,42 @@ export default function SkillTree() {
   const { t } = useTranslation();
 
   // ── Mutable tree state ──
-  const [treeRoot, setTreeRoot] = useState<SkillNode>(initialSkillTreeRoot);
+  const [treeRoot, setTreeRootState] = useState<SkillNode>(initialSkillTreeRoot);
+  // ── Undo / Redo history ──
+  const historyRef = useRef<SkillNode[]>([initialSkillTreeRoot]);
+  const historyIdxRef = useRef<number>(0);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  /** Drop-in replacement for setTreeRoot that records history. */
+  const setTreeRoot = useCallback((updater: SkillNode | ((prev: SkillNode) => SkillNode)) => {
+    setTreeRootState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
+      historyRef.current.push(next);
+      historyIdxRef.current = historyRef.current.length - 1;
+      setCanUndo(true);
+      setCanRedo(false);
+      return next;
+    });
+  }, []);
+
+  const undo = useCallback(() => {
+    if (historyIdxRef.current <= 0) return;
+    historyIdxRef.current -= 1;
+    setTreeRootState(historyRef.current[historyIdxRef.current]);
+    setCanUndo(historyIdxRef.current > 0);
+    setCanRedo(true);
+  }, []);
+
+  const redo = useCallback(() => {
+    if (historyIdxRef.current >= historyRef.current.length - 1) return;
+    historyIdxRef.current += 1;
+    setTreeRootState(historyRef.current[historyIdxRef.current]);
+    setCanUndo(true);
+    setCanRedo(historyIdxRef.current < historyRef.current.length - 1);
+  }, []);
+
   const [seedPositions, setSeedPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
   const [frozenPositions, setFrozenPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
   // Unique tree ID — stable across saves so version-controlled exports are diffable
@@ -633,19 +668,28 @@ export default function SkillTree() {
     nodeDragStartRef.current = null;
   }, []);
 
-  // Keyboard shortcut: 'm' toggles move mode
+  // Keyboard shortcuts: 'm' toggles move mode; Ctrl+Z undo; Ctrl+Shift+Z / Ctrl+Y redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'm' || e.key === 'M') {
-        // Don't fire when typing in an input / textarea / dialog
-        const tag = (e.target as HTMLElement).tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
-        toggleMoveMode();
+      const tag = (e.target as HTMLElement).tagName;
+      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable;
+
+      if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (e.shiftKey) { redo(); } else { undo(); }
+        return;
       }
+      if ((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (isTyping) return;
+      if (e.key === 'm' || e.key === 'M') toggleMoveMode();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMoveMode]);
+  }, [toggleMoveMode, undo, redo]);
 
   /** Collect IDs of the focused node and all its descendants */
   const getDraggedIds = useCallback((rootId: string): Set<string> => {
@@ -860,6 +904,37 @@ export default function SkillTree() {
         position: 'absolute', bottom: 20, right: 24,
         display: 'flex', gap: 1, alignItems: 'center',
       }}>
+        {/* Undo button */}
+        <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid', borderColor: canUndo ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)', borderRadius: 1, bgcolor: canUndo ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)', transition: 'border-color 0.3s, background-color 0.3s' }}>
+          <Tooltip title={t('tree.undo')} placement="top" arrow>
+            <Box component="button" onClick={canUndo ? undo : undefined} disabled={!canUndo}
+              sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: canUndo ? 'pointer' : 'not-allowed', color: canUndo ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)', transition: 'color 0.2s, background-color 0.2s', '&:hover': canUndo ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {} }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M3 7H13a4 4 0 010 8H7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M6 4L3 7l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Redo button */}
+        <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid', borderColor: canRedo ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)', borderRadius: 1, bgcolor: canRedo ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)', transition: 'border-color 0.3s, background-color 0.3s' }}>
+          <Tooltip title={t('tree.redo')} placement="top" arrow>
+            <Box component="button" onClick={canRedo ? redo : undefined} disabled={!canRedo}
+              sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: canRedo ? 'pointer' : 'not-allowed', color: canRedo ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)', transition: 'color 0.2s, background-color 0.2s', '&:hover': canRedo ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {} }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M15 7H5a4 4 0 000 8h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M12 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Separator */}
+        <Box sx={{ width: '1px', height: 32, bgcolor: 'rgba(255,255,255,0.1)', mx: 0.5 }} />
+
         {/* Import button */}
         <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 1, bgcolor: 'rgba(255,255,255,0.04)' }}>
           <Tooltip title={t('tree.importTree')} placement="top" arrow>

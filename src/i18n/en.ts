@@ -76,6 +76,8 @@ export const en = {
       deleteConfirmTitle: 'Delete node?',
       deleteConfirmBody: 'Delete "{{name}}" and all its children? This cannot be undone.',
       deleteConfirm: 'Delete',
+      undo: 'Undo',
+      redo: 'Redo',
     },
   },
 };
