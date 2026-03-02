@@ -299,13 +299,13 @@ function wrapText(text: string, maxChars = 10): string[] {
 // ── Skill node SVG element ────────────────────────────────────────────────────
 interface SkillNodeElProps {
   node: NodeDatum; isFocused: boolean; isChild: boolean;
-  isMoveMode: boolean; isDraggingNode: boolean;
+  isDraggingNode: boolean;
   dragDx: number; dragDy: number;
   onNodeMouseDown: (e: React.MouseEvent, node: NodeDatum) => void;
   onClick: () => void; label: string;
 }
 
-function SkillNodeEl({ node, isFocused, isChild, isMoveMode, isDraggingNode, dragDx, dragDy, onNodeMouseDown, onClick, label }: SkillNodeElProps) {
+function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy, onNodeMouseDown, onClick, label }: SkillNodeElProps) {
   const [hovered, setHovered] = useState(false);
   const base = PALETTE[node.colorKey];
   const stroke = node.colorOverride ?? base.stroke;
@@ -316,7 +316,7 @@ function SkillNodeEl({ node, isFocused, isChild, isMoveMode, isDraggingNode, dra
   const fs    = [12, 11, 9.5, 8.5][node.depth] ?? 8.5;
   const scale = isFocused ? FOCUS_SCALE : isChild ? 1.08 : hovered ? 1.1 : 1;
   const sw    = isFocused ? 2.5 : isChild ? 2 : hovered ? 1.5 : 1;
-  const cursor = isMoveMode ? (isFocused ? 'grab' : 'default') : 'pointer';
+  const cursor = isFocused ? (isDraggingNode ? 'grabbing' : 'grab') : 'pointer';
 
   const tx = node.x + (isDraggingNode ? dragDx : 0);
   const ty = node.y + (isDraggingNode ? dragDy : 0);
@@ -326,7 +326,7 @@ function SkillNodeEl({ node, isFocused, isChild, isMoveMode, isDraggingNode, dra
       data-node="true"
       transform={`translate(${tx}, ${ty})`}
       onClick={onClick}
-      onMouseDown={isMoveMode && isFocused ? (e) => onNodeMouseDown(e, node) : undefined}
+      onMouseDown={isFocused ? (e) => onNodeMouseDown(e, node) : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{ cursor }}
@@ -458,7 +458,6 @@ export default function SkillTree() {
   }, [panX, panY]);
 
   // Declared here so handleSvgMouseMove/Up can reference them without TDZ errors
-  const [isMoveMode, setIsMoveMode] = useState(false);
   const [nodeDragOffset, setNodeDragOffset] = useState<{ dx: number; dy: number } | null>(null);
   const nodeDragStartRef = useRef<{
     nodeId: string;
@@ -699,19 +698,9 @@ export default function SkillTree() {
     e.target.value = ''; // reset so the same file can be re-imported
   }, []);
 
-  // ── Move-node mode (drag-based) ──
-  const toggleMoveMode = useCallback(() => {
-    setIsMoveMode(prev => !prev);
-    setNodeDragOffset(null);
-    nodeDragStartRef.current = null;
-  }, []);
-
-  // Keyboard shortcuts: 'm' toggles move mode; Ctrl+Z undo; Ctrl+Shift+Z / Ctrl+Y redo
+  // Keyboard shortcuts: Ctrl+Z undo; Ctrl+Shift+Z / Ctrl+Y redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
-      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable;
-
       if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         if (e.shiftKey) { redo(); } else { undo(); }
@@ -720,14 +709,11 @@ export default function SkillTree() {
       if ((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         redo();
-        return;
       }
-      if (isTyping) return;
-      if (e.key === 'm' || e.key === 'M') toggleMoveMode();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleMoveMode, undo, redo]);
+  }, [undo, redo]);
 
   /** Collect IDs of the focused node and all its descendants */
   const getDraggedIds = useCallback((rootId: string): Set<string> => {
@@ -742,7 +728,6 @@ export default function SkillTree() {
   }, [edges]);
 
   const handleNodeMouseDown = useCallback((e: React.MouseEvent, node: NodeDatum) => {
-    if (!isMoveMode) return;
     e.stopPropagation(); // don't start a pan drag
     const el = svgRef.current;
     if (!el) return;
@@ -756,7 +741,7 @@ export default function SkillTree() {
       svgScaleY: VH / rect.height / zoom,
     };
     setNodeDragOffset({ dx: 0, dy: 0 });
-  }, [isMoveMode, zoom]);
+  }, [zoom]);
 
   // ── Node click: always focuses the node; in move mode this picks the node to drag ──
   const handleNodeClick = useCallback((node: NodeDatum) => {
@@ -795,7 +780,7 @@ export default function SkillTree() {
         ref={svgRef}
         viewBox={`0 0 ${VW} ${VH}`}
         preserveAspectRatio="xMidYMid meet"
-        style={{ width: '100%', height: '100%', display: 'block', cursor: (isMoveMode && nodeDragOffset) ? 'grabbing' : isMoveMode ? 'default' : isDragging ? 'grabbing' : 'grab' }}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: nodeDragOffset ? 'grabbing' : isDragging ? 'grabbing' : 'grab' }}
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}
@@ -849,7 +834,6 @@ export default function SkillTree() {
                   <SkillNodeEl key={n.id} node={n}
                     isFocused={n.id === focusedId}
                     isChild={childrenIds.has(n.id)}
-                    isMoveMode={isMoveMode}
                     isDraggingNode={isDraggingNode}
                     dragDx={ddx}
                     dragDy={ddy}
@@ -1053,47 +1037,6 @@ export default function SkillTree() {
           </Tooltip>
         </Box>
 
-        {/* Move button */}
-        <Box sx={{
-          width: 52, height: 52,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          border: '1px solid',
-          borderColor: isMoveMode ? 'rgba(255,255,255,0.5)' : focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
-          borderRadius: 1,
-          bgcolor: isMoveMode ? 'rgba(255,255,255,0.1)' : focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
-          transition: 'border-color 0.3s, background-color 0.3s',
-        }}>
-          <Tooltip
-            title={!focusedId ? t('tree.selectNodeFirst') : isMoveMode ? t('tree.cancelMove') : t('tree.moveNode')}
-            placement="top"
-            arrow
-          >
-            <Box
-              component="button"
-              onClick={focusedId ? toggleMoveMode : undefined}
-              disabled={!focusedId}
-              sx={{
-                all: 'unset',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 36, height: 36, borderRadius: '50%',
-                cursor: focusedId ? 'pointer' : 'not-allowed',
-                color: isMoveMode ? '#fff' : focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
-                transition: 'color 0.2s, background-color 0.2s',
-                '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
-              }}
-            >
-              {/* Arrow-cross / move icon drawn in SVG */}
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M10 2 L10 18 M2 10 L18 10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                <path d="M10 2 L7.5 5 M10 2 L12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M10 18 L7.5 15 M10 18 L12.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M2 10 L5 7.5 M2 10 L5 12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M18 10 L15 7.5 M18 10 L15 12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </Box>
-          </Tooltip>
-        </Box>
-
         {/* Add button */}
         <Box sx={{
           width: 52, height: 52,
@@ -1169,23 +1112,6 @@ export default function SkillTree() {
           );
         })()}
       </Box>
-
-      {/* ── Move mode banner ── */}
-      {isMoveMode && (
-        <Box sx={{
-          position: 'absolute', top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%) translateY(-220px)',
-          pointerEvents: 'none',
-          bgcolor: 'rgba(255,255,255,0.07)',
-          border: '1px solid rgba(255,255,255,0.18)',
-          borderRadius: 1,
-          px: 2.5, py: 1,
-        }}>
-          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)', letterSpacing: 0.5 }}>
-            {t('tree.moveBanner')}
-          </Typography>
-        </Box>
-      )}
 
       {/* ── Add Node dialog ── */}
       <Dialog
