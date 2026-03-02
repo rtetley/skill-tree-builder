@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { skillTreeRoot as initialSkillTreeRoot, SkillNode } from '../data/skillTree';
+import { fr } from '@codegouvfr/react-dsfr';
 
 // ── Flat Anthracite Palette ──────────────────────────────────────────────────
 type PKey = 'root' | 'development' | 'research' | 'communication' | 'organisation' | 'default';
@@ -29,7 +30,7 @@ const CAT_KEYS: Record<string, PKey> = {
 const TREE_BG = '#1e2229';
 
 // Scissors cursor — hotspot at the blade pivot (8,12 in a 24×24 canvas)
-const SCISSORS_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' d='M6 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM20 4L8 12M20 20L8 12'/%3E%3C/svg%3E") 8 12, crosshair`;
+const SCISSORS_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' d='M6 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM8 6L21 18M8 18L21 6'/%3E%3C/svg%3E") 8 12, crosshair`;
 
 // ── Color picker swatches (stroke colors from palette + extras) ───────────────
 const COLOR_SWATCHES = [
@@ -1212,10 +1213,7 @@ export default function SkillTree() {
             <Box component="button" onClick={canUndo ? undo : undefined} disabled={!canUndo}
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: canUndo ? 'pointer' : 'not-allowed', color: canUndo ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)', transition: 'color 0.2s, background-color 0.2s', '&:hover': canUndo ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {} }}
             >
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M3 7H13a4 4 0 010 8H7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M6 4L3 7l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <i className={fr.cx('ri-arrow-go-back-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1226,10 +1224,7 @@ export default function SkillTree() {
             <Box component="button" onClick={canRedo ? redo : undefined} disabled={!canRedo}
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: canRedo ? 'pointer' : 'not-allowed', color: canRedo ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)', transition: 'color 0.2s, background-color 0.2s', '&:hover': canRedo ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {} }}
             >
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M15 7H5a4 4 0 000 8h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M12 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <i className={fr.cx('ri-arrow-go-forward-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1243,10 +1238,7 @@ export default function SkillTree() {
             <Box component="button" onClick={() => importInputRef.current?.click()}
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
             >
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M9 3v8M9 11L5.5 7.5M9 11L12.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+              <i className={fr.cx('ri-download-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1257,10 +1249,7 @@ export default function SkillTree() {
             <Box component="button" onClick={handleExport}
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
             >
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M9 11V3M9 3L5.5 6.5M9 3L12.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+              <i className={fr.cx('ri-upload-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1290,18 +1279,7 @@ export default function SkillTree() {
                 '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' },
               }}
             >
-              {/* Radial-burst / auto-layout icon */}
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <circle cx="9" cy="9" r="2" stroke="currentColor" strokeWidth="1.5"/>
-                <line x1="9" y1="1" x2="9" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="9" y1="13" x2="9" y2="17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="1" y1="9" x2="5" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="13" y1="9" x2="17" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="3.1" y1="3.1" x2="5.9" y2="5.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="12.1" y1="12.1" x2="14.9" y2="14.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="14.9" y1="3.1" x2="12.1" y2="5.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="5.9" y1="12.1" x2="3.1" y2="14.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+              <i className={fr.cx('ri-magic-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1333,14 +1311,7 @@ export default function SkillTree() {
                     '&:hover': { color: cutActive ? '#ef4444' : '#fff', bgcolor: 'rgba(255,255,255,0.08)' },
                   }}
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <circle cx="4" cy="5.5" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                    <circle cx="4" cy="12.5" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                    <line x1="5.7" y1="5.5" x2="16" y2="2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                    <line x1="5.7" y1="12.5" x2="16" y2="15.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                    <line x1="5.7" y1="5.5" x2="10" y2="9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                    <line x1="5.7" y1="12.5" x2="10" y2="9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                  </svg>
+                  <i className={fr.cx('ri-scissors-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
                 </Box>
               </Tooltip>
             </Box>
@@ -1372,12 +1343,11 @@ export default function SkillTree() {
                 width: 36, height: 36, borderRadius: '50%',
                 cursor: focusedId ? 'pointer' : 'not-allowed',
                 color: focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
-                fontSize: '1.5rem', lineHeight: 1,
                 transition: 'color 0.2s, background-color 0.2s',
                 '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
               }}
             >
-              +
+              <i className={fr.cx('ri-add-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1407,9 +1377,7 @@ export default function SkillTree() {
                 '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
               }}
             >
-              <svg width="17" height="17" viewBox="0 0 17 17" fill="none">
-                <path d="M12 2.5a1.5 1.5 0 012.12 2.12L5.5 13.24 3 14l.76-2.5L12 2.5z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <i className={fr.cx('ri-pencil-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
             </Box>
           </Tooltip>
         </Box>
@@ -1445,9 +1413,7 @@ export default function SkillTree() {
                     '&:hover': canDelete ? { color: '#ef4444', bgcolor: 'rgba(239,68,68,0.12)' } : {},
                   }}
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M3 5h12M7 5V3h4v2M8 8v6M10 8v6M4 5l1 10a1 1 0 001 1h6a1 1 0 001-1L14 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
+                  <i className={fr.cx('ri-delete-bin-line')} aria-hidden style={{ fontSize: '1.125rem' }} />
                 </Box>
               </Tooltip>
             </Box>
