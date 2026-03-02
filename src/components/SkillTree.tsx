@@ -376,29 +376,36 @@ export default function SkillTree() {
 
   // ── Mutable tree state ──
   const [treeRoot, setTreeRootState] = useState<SkillNode>(initialSkillTreeRoot);
+  // Mirror of treeRoot as a ref so setTreeRoot can read the current value synchronously
+  // without being in a stale closure — critical to avoid mutating historyRef twice
+  // when React StrictMode double-invokes state updater functions.
+  const treeRootRef = useRef<SkillNode>(initialSkillTreeRoot);
   // ── Undo / Redo history ──
   const historyRef = useRef<SkillNode[]>([initialSkillTreeRoot]);
   const historyIdxRef = useRef<number>(0);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  /** Drop-in replacement for setTreeRoot that records history. */
+  /** Drop-in replacement for setTreeRoot that records history.
+   *  History is mutated OUTSIDE any state-updater so React StrictMode's
+   *  double-invocation of updater functions does not produce duplicate entries. */
   const setTreeRoot = useCallback((updater: SkillNode | ((prev: SkillNode) => SkillNode)) => {
-    setTreeRootState(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
-      historyRef.current.push(next);
-      historyIdxRef.current = historyRef.current.length - 1;
-      setCanUndo(true);
-      setCanRedo(false);
-      return next;
-    });
+    const next = typeof updater === 'function' ? updater(treeRootRef.current) : updater;
+    treeRootRef.current = next;
+    historyRef.current = historyRef.current.slice(0, historyIdxRef.current + 1);
+    historyRef.current.push(next);
+    historyIdxRef.current = historyRef.current.length - 1;
+    setCanUndo(true);
+    setCanRedo(false);
+    setTreeRootState(next);
   }, []);
 
   const undo = useCallback(() => {
     if (historyIdxRef.current <= 0) return;
     historyIdxRef.current -= 1;
-    setTreeRootState(historyRef.current[historyIdxRef.current]);
+    const prev = historyRef.current[historyIdxRef.current];
+    treeRootRef.current = prev;
+    setTreeRootState(prev);
     setCanUndo(historyIdxRef.current > 0);
     setCanRedo(true);
   }, []);
@@ -406,7 +413,9 @@ export default function SkillTree() {
   const redo = useCallback(() => {
     if (historyIdxRef.current >= historyRef.current.length - 1) return;
     historyIdxRef.current += 1;
-    setTreeRootState(historyRef.current[historyIdxRef.current]);
+    const next = historyRef.current[historyIdxRef.current];
+    treeRootRef.current = next;
+    setTreeRootState(next);
     setCanUndo(true);
     setCanRedo(historyIdxRef.current < historyRef.current.length - 1);
   }, []);
@@ -499,10 +508,14 @@ export default function SkillTree() {
   }, []);
 
   const handleSvgMouseUp = useCallback(() => {
-    // Commit the node drag offset into the tree
+    // Commit the node drag offset into the tree — only if the node actually moved
     if (nodeDragStartRef.current && nodeDragOffset) {
       const { nodeId } = nodeDragStartRef.current;
       const { dx, dy } = nodeDragOffset;
+      nodeDragStartRef.current = null;
+      setNodeDragOffset(null);
+      // Ignore pure clicks (mousedown+mouseup with zero or sub-pixel movement)
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
       setTreeRoot(prev => {
         // Collect all IDs that need offsetting: the dragged node + all its descendants
         const draggedIds = new Set<string>();
@@ -525,8 +538,6 @@ export default function SkillTree() {
         }
         return applyOffset(prev);
       });
-      nodeDragStartRef.current = null;
-      setNodeDragOffset(null);
       return;
     }
     dragStartRef.current = null;
