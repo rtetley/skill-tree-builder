@@ -1,0 +1,127 @@
+# Skill Tree Builder
+
+An interactive, force-directed skill tree visualiser built with React, TypeScript, and Vite. Browse, customise, and export a radial graph of skills organised across four domains: **Development**, **Research**, **Communication**, and **Organisation**.
+
+## Features
+
+- **Interactive SVG canvas** – pan by dragging the background and zoom with the scroll wheel
+- **Focus mode** – click any node to centre and enlarge it
+- **Add nodes** – attach custom child nodes to any existing node, with a free-choice colour
+- **Move nodes** – drag individual nodes to reposition them manually (press **M** or use the toolbar button to toggle move mode)
+- **Delete nodes** – remove a node and all its descendants with a confirmation prompt
+- **Clean up layout** – re-run the force-directed spring simulation to tidy the graph
+- **Export / Import** – save the full tree (positions, custom nodes, colour overrides) as a JSON file and reload it later
+- **i18n ready** – UI strings are externalised via `react-i18next`; English is the default locale
+
+## Tech Stack
+
+| Layer | Library |
+|---|---|
+| Framework | [React 18](https://react.dev) + [TypeScript](https://www.typescriptlang.org) |
+| Build tool | [Vite](https://vitejs.dev) |
+| UI components | [MUI v6](https://mui.com) + [Emotion](https://emotion.sh) |
+| Design system | [@codegouvfr/react-dsfr](https://github.com/codegouvfr/react-dsfr) |
+| Internationalisation | [i18next](https://www.i18next.com) / [react-i18next](https://react.i18next.com) |
+| Routing | [React Router v7](https://reactrouter.com) |
+
+## Prerequisites
+
+- **Node.js** ≥ 18
+- **Yarn** ≥ 1.22
+
+## Getting Started
+
+### 1. Install dependencies
+
+```bash
+yarn
+```
+
+### 2. Start the development server
+
+```bash
+yarn dev
+```
+
+The app will be available at [http://localhost:5173](http://localhost:5173) by default.
+
+### 3. Build for production
+
+```bash
+yarn build
+```
+
+The compiled output is written to `dist/`.
+
+### 4. Preview the production build
+
+```bash
+yarn preview
+```
+
+### 5. Lint
+
+```bash
+yarn lint
+```
+
+## Project Structure
+
+```
+src/
+├── App.tsx                  # Root component
+├── main.tsx                 # Entry point – initialises DSFR & i18n
+├── vite-env.d.ts
+├── components/
+│   └── SkillTree.tsx        # Full skill tree component (layout, interaction, SVG rendering)
+├── data/
+│   └── skillTree.ts         # Default tree data (SkillNode interface + root definition)
+└── i18n/
+    ├── index.ts             # i18next initialisation
+    └── en.ts                # English translations
+```
+
+## Customising the Default Tree
+
+Edit [`src/data/skillTree.ts`](src/data/skillTree.ts) to change the built-in skill hierarchy. Each node follows the `SkillNode` interface:
+
+```ts
+interface SkillNode {
+  id: string;
+  labelKey: string;          // i18n key (e.g. 'skillTree.react') or 'custom:…' for runtime nodes
+  label?: string;            // raw label for custom nodes (bypasses i18n)
+  colorOverride?: string;    // hex colour override
+  positionOffset?: { x: number; y: number }; // manual position offset on top of layout
+  children?: SkillNode[];
+}
+```
+
+Add corresponding translation keys for any new nodes in [`src/i18n/en.ts`](src/i18n/en.ts) under the `skillTree` namespace.
+
+## Adding a New Language
+
+1. Create `src/i18n/<locale>.ts` modelled on `en.ts`.
+2. Register the new resource in `src/i18n/index.ts`.
+3. Set the desired `lng` in the i18next config or implement a language-switcher component.
+
+## Export / Import Format
+
+The **Export tree** button downloads a JSON file with the following shape:
+
+```json
+{
+  "treeId": "skill-tree",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "react",
+      "label": "React",
+      "parentId": "frontend",
+      "colorOverride": "#38bdf8",
+      "position": { "x": 420.5, "y": -180.2 }
+    }
+  ]
+}
+```
+
+Use **Import tree** to restore a previously exported file. Any nodes present in the file but absent from the current data will be re-added as custom nodes; nodes not in the file will retain their auto-layout positions.
