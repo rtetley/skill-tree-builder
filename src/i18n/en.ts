@@ -82,6 +82,9 @@ export const en = {
       nodeDescription: 'Description',
       descriptionPlaceholder: 'Optional · supports Markdown',
       noDescription: 'No description',
+      cutEdge: 'Cut edge',
+      cutEdgeHint: 'Click an edge to cut it, then click a node to reattach · Right-click to cancel',
+      cutEdgePendingAttach: 'Click a node to reattach the subtree · Right-click to cancel',
     },
   },
 };

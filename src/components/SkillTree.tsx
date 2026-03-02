@@ -28,6 +28,9 @@ const CAT_KEYS: Record<string, PKey> = {
 
 const TREE_BG = '#1e2229';
 
+// Scissors cursor — hotspot at the blade pivot (8,12 in a 24×24 canvas)
+const SCISSORS_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' d='M6 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM20 4L8 12M20 20L8 12'/%3E%3C/svg%3E") 8 12, crosshair`;
+
 // ── Color picker swatches (stroke colors from palette + extras) ───────────────
 const COLOR_SWATCHES = [
   '#e2b714', '#38bdf8', '#a78bfa', '#fb923c', '#4ade80',
@@ -316,9 +319,10 @@ interface SkillNodeElProps {
   dragDx: number; dragDy: number;
   onNodeMouseDown: (e: React.MouseEvent, node: NodeDatum) => void;
   onClick: () => void; label: string;
+  isAttachMode?: boolean; isAttachable?: boolean;
 }
 
-function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy, onNodeMouseDown, onClick, label }: SkillNodeElProps) {
+function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy, onNodeMouseDown, onClick, label, isAttachMode, isAttachable }: SkillNodeElProps) {
   const [hovered, setHovered] = useState(false);
   const base = PALETTE[node.colorKey];
   const stroke = node.colorOverride ?? base.stroke;
@@ -327,9 +331,15 @@ function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy,
   const r     = BASE_R[node.depth] ?? 22;
   const lines = wrapText(label);
   const fs    = [12, 11, 9.5, 8.5][node.depth] ?? 8.5;
-  const scale = isFocused ? FOCUS_SCALE : isChild ? 1.08 : hovered ? 1.1 : 1;
-  const sw    = isFocused ? 2.5 : isChild ? 2 : hovered ? 1.5 : 1;
-  const cursor = isFocused ? (isDraggingNode ? 'grabbing' : 'grab') : 'pointer';
+  const scale = isAttachMode
+    ? (isAttachable ? (hovered ? 1.1 : 1) : 0.7)
+    : isFocused ? FOCUS_SCALE : isChild ? 1.08 : hovered ? 1.1 : 1;
+  const sw    = isAttachMode
+    ? (isAttachable ? (hovered ? 2 : 1) : 0.5)
+    : isFocused ? 2.5 : isChild ? 2 : hovered ? 1.5 : 1;
+  const cursor = isAttachMode
+    ? (isAttachable ? 'pointer' : 'not-allowed')
+    : isFocused ? (isDraggingNode ? 'grabbing' : 'grab') : 'pointer';
 
   const tx = node.x + (isDraggingNode ? dragDx : 0);
   const ty = node.y + (isDraggingNode ? dragDy : 0);
@@ -339,14 +349,20 @@ function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy,
       data-node="true"
       transform={`translate(${tx}, ${ty})`}
       onClick={onClick}
-      onMouseDown={isFocused ? (e) => onNodeMouseDown(e, node) : undefined}
+      onMouseDown={(!isAttachMode && isFocused) ? (e) => onNodeMouseDown(e, node) : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ cursor }}
+      style={{ cursor, opacity: (isAttachMode && !isAttachable) ? 0.35 : 1 }}
     >
-      {isFocused && (
+      {isFocused && !isAttachMode && (
         <circle r={r * 1.7} fill="none" stroke={stroke} strokeWidth={1}
           opacity={0.35} className={isDraggingNode ? undefined : 'skill-pulse'} />
+      )}
+      {isAttachMode && isAttachable && (
+        <circle r={r + 8} fill="none" stroke="#22c55e" strokeWidth={2} strokeOpacity={0.7} />
+      )}
+      {isAttachMode && !isAttachable && (
+        <circle r={r + 6} fill="none" stroke="#ef4444" strokeWidth={1.5} strokeOpacity={0.5} />
       )}
       <g style={{
         transformBox: 'fill-box', transformOrigin: 'center',
@@ -475,6 +491,8 @@ export default function SkillTree() {
   const handleSvgMouseDown = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     // Ignore clicks that land on a node circle/text (they have their own handler)
     if ((e.target as Element).closest('[data-node]')) return;
+    // Ignore clicks on edge hit areas (cut mode)
+    if ((e.target as Element).closest('[data-edge]')) return;
     dragStartRef.current = { mx: e.clientX, my: e.clientY, px: panX, py: panY };
     setIsDragging(true);
   }, [panX, panY]);
@@ -808,9 +826,82 @@ export default function SkillTree() {
   }, [zoom]);
 
   // ── Node click: always focuses the node; in move mode this picks the node to drag ──
-  const handleNodeClick = useCallback((node: NodeDatum) => {
-    setFocusedId(node.id);
+  // ── Cut-edge mode ─────────────────────────────────────────────────────────────────
+  const [isCutMode, setIsCutMode] = useState(false);
+  const [hoveredEdgeKey, setHoveredEdgeKey] = useState<string | null>(null);
+  const [pendingCut, setPendingCut] = useState<{ parentId: string; childId: string } | null>(null);
+
+  // IDs of the subtree that's pending reattachment (used to block cycles + dim those nodes)
+  const pendingSubtreeIds = useMemo(() => {
+    if (!pendingCut) return new Set<string>();
+    const ids = new Set<string>();
+    function collect(n: SkillNode): void { ids.add(n.id); n.children?.forEach(collect); }
+    const node = findNodeById(treeRootRef.current, pendingCut.childId);
+    if (node) collect(node);
+    return ids;
+  }, [pendingCut, treeRoot]);
+
+  // Called when the user clicks an edge in cut mode — records the pending cut without
+  // modifying the tree yet; the edge turns dashed and the user picks a new parent.
+  const handleCutEdge = useCallback((parentId: string, childId: string) => {
+    setPendingCut({ parentId, childId });
+    setIsCutMode(false);
+    setHoveredEdgeKey(null);
   }, []);
+
+  const cancelCutMode = useCallback(() => {
+    setIsCutMode(false);
+    setHoveredEdgeKey(null);
+    setPendingCut(null);
+  }, []);
+
+  const handleNodeClick = useCallback((node: NodeDatum) => {
+    // ── Pending-cut reconnect ──────────────────────────────────────────────────
+    if (pendingCut) {
+      if (pendingSubtreeIds.has(node.id)) return; // cycle guard
+      const { parentId: cutParentId, childId: cutChildId } = pendingCut;
+      const targetId = node.id;
+
+      // Freeze all current visual positions using the same pattern as handleAddNodeConfirm
+      // (spring-basis = visual − positionOffset) so the layout doesn't re-run after the move.
+      const offsetMap = new Map<string, { x: number; y: number }>();
+      function collectOffsets(n: SkillNode): void {
+        offsetMap.set(n.id, n.positionOffset ?? { x: 0, y: 0 });
+        n.children?.forEach(collectOffsets);
+      }
+      collectOffsets(treeRootRef.current);
+      const newFrozen = new Map<string, { x: number; y: number }>();
+      for (const [nid, datum] of nodeMap) {
+        const off = offsetMap.get(nid) ?? { x: 0, y: 0 };
+        newFrozen.set(nid, { x: datum.x - off.x, y: datum.y - off.y });
+      }
+      setFrozenPositions(newFrozen);
+      setSeedPositions(null);
+
+      setTreeRoot(prev => {
+        const subtree = findNodeById(prev, cutChildId);
+        if (!subtree) return prev;
+        function detachFromParent(n: SkillNode): SkillNode {
+          if (n.id === cutParentId) {
+            return { ...n, children: (n.children ?? []).filter(c => c.id !== cutChildId) };
+          }
+          return { ...n, children: n.children?.map(detachFromParent) };
+        }
+        function attachToTarget(n: SkillNode): SkillNode {
+          if (n.id === targetId) {
+            return { ...n, children: [...(n.children ?? []), subtree!] };
+          }
+          return { ...n, children: n.children?.map(attachToTarget) };
+        }
+        return attachToTarget(detachFromParent(prev));
+      });
+
+      setPendingCut(null);
+      setFocusedId(cutChildId);
+      return;
+    }
+    setFocusedId(node.id);
+  }, [pendingCut, pendingSubtreeIds, nodeMap]);
 
   const childrenIds = useMemo(() => {
     const s = new Set<string>();
@@ -846,11 +937,12 @@ export default function SkillTree() {
         ref={svgRef}
         viewBox={`0 0 ${VW} ${VH}`}
         preserveAspectRatio="xMidYMid meet"
-        style={{ width: '100%', height: '100%', display: 'block', cursor: nodeDragOffset ? 'grabbing' : isDragging ? 'grabbing' : 'grab' }}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: isCutMode ? SCISSORS_CURSOR : pendingCut ? 'crosshair' : nodeDragOffset ? 'grabbing' : isDragging ? 'grabbing' : 'grab' }}
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}
         onMouseLeave={handleSvgMouseUp}
+        onContextMenu={(e) => { e.preventDefault(); cancelCutMode(); }}
       >
         <rect width={VW} height={VH} fill={TREE_BG} />
 
@@ -863,11 +955,14 @@ export default function SkillTree() {
             return (<>
               {/* Edges */}
               {edges.map((e, i) => {
-                const stroke = e.colorOverride ?? PALETTE[e.colorKey].stroke;
+                const edgeKey = `${e.parentId}->${e.childId}`;
+                const isPendingCut = pendingCut?.parentId === e.parentId && pendingCut?.childId === e.childId;
+                const isEdgeHovered = isCutMode && hoveredEdgeKey === edgeKey;
+                const stroke = isPendingCut ? '#f87171' : isEdgeHovered ? '#ef4444' : (e.colorOverride ?? PALETTE[e.colorKey].stroke);
                 const toChild  = e.parentId === focusedId;
                 const toParent = e.childId  === focusedId;
-                const sw       = toChild ? 2 : toParent ? 1.2 : 0.8;
-                const opacity  = toChild ? 0.75 : toParent ? 0.35 : 0.15;
+                const sw       = isPendingCut ? 2 : toChild ? 2 : toParent ? 1.2 : 0.8;
+                const opacity  = isPendingCut ? 0.85 : isEdgeHovered ? 0.8 : toChild ? 0.75 : toParent ? 0.35 : 0.15;
                 const parentDragged = draggedIds?.has(e.parentId);
                 const childDragged  = draggedIds?.has(e.childId);
                 // Center positions with drag applied
@@ -885,11 +980,26 @@ export default function SkillTree() {
                 const x2 = cx2 - e.rChild  * cScale * edx / norm;
                 const y2 = cy2 - e.rChild  * cScale * edy / norm;
                 return (
-                  <line key={i}
-                    x1={x1} y1={y1} x2={x2} y2={y2}
-                    stroke={stroke} strokeWidth={sw} strokeOpacity={opacity}
-                    style={{ transition: 'stroke-opacity 0.35s ease, stroke-width 0.35s ease' }}
-                  />
+                  <g key={i}>
+                    <line
+                      x1={x1} y1={y1} x2={x2} y2={y2}
+                      stroke={stroke} strokeWidth={sw} strokeOpacity={opacity}
+                      strokeDasharray={isPendingCut ? '7 5' : undefined}
+                      style={{ transition: isPendingCut ? 'none' : 'stroke-opacity 0.35s ease, stroke-width 0.35s ease' }}
+                    />
+                    {/* Invisible wide hit-area for cut mode — only for edges not yet cut */}
+                    {isCutMode && !isPendingCut && (
+                      <line
+                        x1={x1} y1={y1} x2={x2} y2={y2}
+                        stroke="transparent" strokeWidth={12}
+                        data-edge={edgeKey}
+                        style={{ cursor: SCISSORS_CURSOR }}
+                        onMouseEnter={() => setHoveredEdgeKey(edgeKey)}
+                        onMouseLeave={() => setHoveredEdgeKey(null)}
+                        onClick={() => handleCutEdge(e.parentId, e.childId)}
+                      />
+                    )}
+                  </g>
                 );
               })}
 
@@ -906,6 +1016,8 @@ export default function SkillTree() {
                     onNodeMouseDown={handleNodeMouseDown}
                     onClick={() => handleNodeClick(n)}
                     label={n.label ?? t(n.labelKey)}
+                    isAttachMode={!!pendingCut}
+                    isAttachable={!!pendingCut && !pendingSubtreeIds.has(n.id)}
                   />
                 );
               })}
@@ -925,6 +1037,25 @@ export default function SkillTree() {
           }
         `}</style>
       </svg>
+
+      {/* ── Cut-mode status banner (bottom-centre) ── */}
+      {(isCutMode || pendingCut) && (
+        <Box sx={{
+          position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)',
+          bgcolor: 'rgba(18,22,28,0.92)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid rgba(239,68,68,0.3)',
+          borderRadius: 1.5,
+          px: 2.5, py: 1,
+          display: 'flex', alignItems: 'center', gap: 1.5,
+          pointerEvents: 'none',
+        }}>
+          <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: '#ef4444', flexShrink: 0, animation: 'skill-pulse 1.4s ease-in-out infinite', transformBox: 'fill-box' }} />
+          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+            {pendingCut ? t('tree.cutEdgePendingAttach') : t('tree.cutEdgeHint')}
+          </Typography>
+        </Box>
+      )}
 
       {/* ── Breadcrumbs overlay (top-left) ── */}
       <Box sx={{
@@ -1174,6 +1305,47 @@ export default function SkillTree() {
             </Box>
           </Tooltip>
         </Box>
+
+        {/* Cut-edge button */}
+        {(() => {
+          const cutActive = isCutMode || !!pendingCut;
+          return (
+            <Box sx={{
+              width: 52, height: 52,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '1px solid',
+              borderColor: cutActive ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.15)',
+              borderRadius: 1,
+              bgcolor: cutActive ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.04)',
+              transition: 'border-color 0.3s, background-color 0.3s',
+            }}>
+              <Tooltip title={t('tree.cutEdge')} placement="top" arrow>
+                <Box
+                  component="button"
+                  onClick={() => cutActive ? cancelCutMode() : setIsCutMode(true)}
+                  sx={{
+                    all: 'unset',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 36, height: 36, borderRadius: '50%',
+                    cursor: 'pointer',
+                    color: cutActive ? '#f87171' : 'rgba(255,255,255,0.7)',
+                    transition: 'color 0.2s, background-color 0.2s',
+                    '&:hover': { color: cutActive ? '#ef4444' : '#fff', bgcolor: 'rgba(255,255,255,0.08)' },
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <circle cx="4" cy="5.5" r="2" stroke="currentColor" strokeWidth="1.4"/>
+                    <circle cx="4" cy="12.5" r="2" stroke="currentColor" strokeWidth="1.4"/>
+                    <line x1="5.7" y1="5.5" x2="16" y2="2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <line x1="5.7" y1="12.5" x2="16" y2="15.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <line x1="5.7" y1="5.5" x2="10" y2="9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <line x1="5.7" y1="12.5" x2="10" y2="9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  </svg>
+                </Box>
+              </Tooltip>
+            </Box>
+          );
+        })()}
 
         {/* Add button */}
         <Box sx={{
