@@ -47,7 +47,8 @@ interface NodeDatum {
   depth: number; colorKey: PKey; colorOverride?: string;
 }
 interface EdgeDatum {
-  x1: number; y1: number; x2: number; y2: number;
+  x1: number; y1: number; x2: number; y2: number; // center-to-center positions
+  rParent: number; rChild: number;                 // base radii for circumference trimming
   colorKey: PKey; colorOverride?: string; parentId: string; childId: string;
 }
 
@@ -143,12 +144,28 @@ function buildLayout(
       const edges: EdgeDatum[] = rawEdges.map(({ parentId, childId }) => {
         const pa = posMap.get(parentId)!, pb = posMap.get(childId)!;
         const c  = colorOf.get(childId)!;
+        const rA = BASE_R[depthOf.get(parentId) ?? 3] ?? 22;
+        const rB = BASE_R[depthOf.get(childId)  ?? 3] ?? 22;
         return { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+          rParent: rA, rChild: rB,
           colorKey: c.colorKey, colorOverride: c.colorOverride, parentId, childId };
       });
       return { nodes, edges };
     }
-    // Fall through to spring simulation for newly-added (unfrozen) nodes
+    // Fall through to spring simulation for newly-added (unfrozen) nodes.
+    // Warm-start each unfrozen node near its (frozen) parent so the spring
+    // settles quickly without displacing existing nodes.
+    for (const { id } of rawNodes) {
+      if (id === root.id || frozenIds.has(id)) continue;
+      const parentEdge = rawEdges.find(e => e.childId === id);
+      if (!parentEdge) continue;
+      const parentPos = pos.get(parentEdge.parentId);
+      if (!parentPos) continue;
+      const angle = Math.random() * 2 * Math.PI;
+      const d = (BASE_R[depthOf.get(parentEdge.parentId) ?? 3] ?? 22)
+              + (BASE_R[depthOf.get(id) ?? 3] ?? 22) + GAP * 3;
+      pos.set(id, { x: parentPos.x + d * Math.cos(angle), y: parentPos.y + d * Math.sin(angle) });
+    }
   }
 
   // Override warm-start with seed positions (supplied when cleanup is triggered from a
@@ -210,6 +227,7 @@ function buildLayout(
     // Integrate velocities → positions
     for (const { id } of rawNodes) {
       if (id === root.id) continue; // root is pinned at origin
+      if (frozenPositions?.has(id)) continue; // frozen nodes are pinned
       const v = vel.get(id)!, f = forces.get(id)!;
       v.vx = (v.vx + f.fx) * DAMP;
       v.vy = (v.vy + f.fy) * DAMP;
@@ -254,7 +272,10 @@ function buildLayout(
   const edges: EdgeDatum[] = rawEdges.map(({ parentId, childId }) => {
     const pa = posMap.get(parentId)!, pb = posMap.get(childId)!;
     const c  = colorOf.get(childId)!;
+    const rA = BASE_R[depthOf.get(parentId) ?? 3] ?? 22;
+    const rB = BASE_R[depthOf.get(childId)  ?? 3] ?? 22;
     return { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+      rParent: rA, rChild: rB,
       colorKey: c.colorKey, colorOverride: c.colorOverride, parentId, childId };
   });
 
@@ -523,6 +544,23 @@ export default function SkillTree() {
       colorOverride: newNodeColor,
     };
 
+    // Freeze all existing nodes so the spring simulation only places the new node,
+    // leaving the rest of the layout completely undisturbed.
+    // frozenPositions stores spring-basis positions (visual pos minus positionOffset).
+    const offsetMap = new Map<string, { x: number; y: number }>();
+    function collectOffsets(node: SkillNode) {
+      offsetMap.set(node.id, node.positionOffset ?? { x: 0, y: 0 });
+      node.children?.forEach(collectOffsets);
+    }
+    collectOffsets(treeRoot);
+    const newFrozen = new Map<string, { x: number; y: number }>();
+    for (const [nid, datum] of nodeMap) {
+      const off = offsetMap.get(nid) ?? { x: 0, y: 0 };
+      newFrozen.set(nid, { x: datum.x - off.x, y: datum.y - off.y });
+    }
+    setFrozenPositions(newFrozen);
+    setSeedPositions(null);
+
     function insertChild(node: SkillNode): SkillNode {
       if (node.id === focusedId) {
         return { ...node, children: [...(node.children ?? []), newNode] };
@@ -534,7 +572,7 @@ export default function SkillTree() {
     setTreeRoot(prev => insertChild(prev));
     setFocusedId(id);
     setDialogOpen(false);
-  }, [focusedId, newNodeTitle, newNodeColor]);
+  }, [focusedId, newNodeTitle, newNodeColor, nodeMap, treeRoot]);
 
   const handleAddNodeCancel = useCallback(() => {
     setDialogOpen(false);
@@ -781,12 +819,23 @@ export default function SkillTree() {
                 const opacity  = toChild ? 0.75 : toParent ? 0.35 : 0.15;
                 const parentDragged = draggedIds?.has(e.parentId);
                 const childDragged  = draggedIds?.has(e.childId);
+                // Center positions with drag applied
+                const cx1 = e.x1 + (parentDragged ? ddx : 0);
+                const cy1 = e.y1 + (parentDragged ? ddy : 0);
+                const cx2 = e.x2 + (childDragged  ? ddx : 0);
+                const cy2 = e.y2 + (childDragged  ? ddy : 0);
+                // Trim to circumference, accounting for focus/child CSS scale
+                const pScale = e.parentId === focusedId ? FOCUS_SCALE : childrenIds.has(e.parentId) ? 1.08 : 1;
+                const cScale = e.childId  === focusedId ? FOCUS_SCALE : childrenIds.has(e.childId)  ? 1.08 : 1;
+                const edx = cx2 - cx1, edy = cy2 - cy1;
+                const norm = Math.hypot(edx, edy) || 1;
+                const x1 = cx1 + e.rParent * pScale * edx / norm;
+                const y1 = cy1 + e.rParent * pScale * edy / norm;
+                const x2 = cx2 - e.rChild  * cScale * edx / norm;
+                const y2 = cy2 - e.rChild  * cScale * edy / norm;
                 return (
                   <line key={i}
-                    x1={e.x1 + (parentDragged ? ddx : 0)}
-                    y1={e.y1 + (parentDragged ? ddy : 0)}
-                    x2={e.x2 + (childDragged  ? ddx : 0)}
-                    y2={e.y2 + (childDragged  ? ddy : 0)}
+                    x1={x1} y1={y1} x2={x2} y2={y2}
                     stroke={stroke} strokeWidth={sw} strokeOpacity={opacity}
                     style={{ transition: 'stroke-opacity 0.35s ease, stroke-width 0.35s ease' }}
                   />
