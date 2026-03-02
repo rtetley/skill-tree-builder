@@ -5,6 +5,8 @@ import {
   TextField, Button, Tooltip,
 } from '@mui/material';
 import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { skillTreeRoot as initialSkillTreeRoot, SkillNode } from '../data/skillTree';
 
 // ── Flat Anthracite Palette ──────────────────────────────────────────────────
@@ -57,6 +59,7 @@ interface ExportNode {
   id: string;
   label: string;
   parentId: string | null;
+  description?: string;
   colorOverride?: string;
   position?: { x: number; y: number }; // final visual position (spring + manual offset)
 }
@@ -280,6 +283,16 @@ function buildLayout(
   });
 
   return { nodes, edges };
+}
+
+// ── Find a node in the tree by ID ─────────────────────────────────────────────
+function findNodeById(root: SkillNode, id: string): SkillNode | undefined {
+  if (root.id === id) return root;
+  for (const child of root.children ?? []) {
+    const found = findNodeById(child, id);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 // ── Text wrap ─────────────────────────────────────────────────────────────────
@@ -524,12 +537,14 @@ export default function SkillTree() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newNodeTitle, setNewNodeTitle] = useState('');
   const [newNodeColor, setNewNodeColor] = useState('#94a3b8');
+  const [newNodeDescription, setNewNodeDescription] = useState('');
 
   const openAddDialog = useCallback(() => {
     const focused = nodeMap.get(focusedId);
     const parentColor = focused?.colorOverride ?? PALETTE[focused?.colorKey ?? 'default'].stroke;
     setNewNodeTitle('');
     setNewNodeColor(parentColor);
+    setNewNodeDescription('');
     setDialogOpen(true);
   }, [focusedId, nodeMap]);
 
@@ -541,6 +556,7 @@ export default function SkillTree() {
       labelKey: `custom:${id}`,
       label: newNodeTitle.trim(),
       colorOverride: newNodeColor,
+      description: newNodeDescription.trim() || undefined,
     };
 
     // Freeze all existing nodes so the spring simulation only places the new node,
@@ -571,10 +587,45 @@ export default function SkillTree() {
     setTreeRoot(prev => insertChild(prev));
     setFocusedId(id);
     setDialogOpen(false);
-  }, [focusedId, newNodeTitle, newNodeColor, nodeMap, treeRoot]);
+  }, [focusedId, newNodeTitle, newNodeColor, newNodeDescription, nodeMap, treeRoot]);
 
   const handleAddNodeCancel = useCallback(() => {
     setDialogOpen(false);
+  }, []);
+
+  // ── Edit-node dialog ───────────────────────────────────────────────────────────────────────
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editTab, setEditTab] = useState<'write' | 'preview'>('write');
+
+  const openEditDialog = useCallback(() => {
+    if (!focusedId) return;
+    const node = findNodeById(treeRoot, focusedId);
+    if (!node) return;
+    const label = node.label ?? t(node.labelKey);
+    setEditTitle(label);
+    setEditDescription(node.description ?? '');
+    setEditTab('write');
+    setEditDialogOpen(true);
+  }, [focusedId, treeRoot, t]);
+
+  const handleEditConfirm = useCallback(() => {
+    if (!editTitle.trim()) return;
+    setTreeRoot(prev => {
+      function updateNode(node: SkillNode): SkillNode {
+        if (node.id === focusedId) {
+          return { ...node, label: editTitle.trim(), description: editDescription.trim() || undefined };
+        }
+        return { ...node, children: node.children?.map(updateNode) };
+      }
+      return updateNode(prev);
+    });
+    setEditDialogOpen(false);
+  }, [focusedId, editTitle, editDescription]);
+
+  const handleEditCancel = useCallback(() => {
+    setEditDialogOpen(false);
   }, []);
 
   // ── Delete node (with all descendants) ──────────────────────────────────
@@ -633,6 +684,7 @@ export default function SkillTree() {
     function flatten(node: SkillNode, parentId: string | null) {
       const label = node.label ?? t(node.labelKey);
       const entry: ExportNode = { id: node.id, label, parentId };
+      if (node.description) entry.description = node.description;
       if (node.colorOverride) entry.colorOverride = node.colorOverride;
       // Save the final visual position (spring position + positionOffset already baked in)
       // so import can warm-start the spring from exactly these coordinates.
@@ -679,6 +731,7 @@ export default function SkillTree() {
           const children = nodeList.filter(n => n.parentId === id).map(n => buildNode(n.id));
           const node: SkillNode = { id: en.id, labelKey: `imported:${en.id}`, label: en.label, children };
           if (en.colorOverride) node.colorOverride = en.colorOverride;
+          if (en.description) node.description = en.description;
           // No positionOffset: positions are passed as seedPositions instead
           return node;
         }
@@ -769,6 +822,8 @@ export default function SkillTree() {
   }, [edges, nodeMap, focusedId]);
 
   const focusedNode = nodeMap.get(focusedId);
+  const focusedSkillNode = useMemo(() => findNodeById(treeRoot, focusedId), [treeRoot, focusedId]);
+  const [descPanelOpen, setDescPanelOpen] = useState(true);
 
   return (
     <Box sx={{ position: 'fixed', inset: 0, bgcolor: TREE_BG, overflow: 'hidden' }}>
@@ -894,13 +949,85 @@ export default function SkillTree() {
         )}
       </Box>
 
-      {/* ── Hint overlay (top-right) ── */}
+      {/* ── Description panel (top-right) ── */}
       <Box sx={{
         position: 'absolute', top: 20, right: 24,
+        width: 300,
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1,
+        pointerEvents: 'none',
       }}>
-        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.7rem' }}>
+        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.65rem' }}>
           {t('tree.hint')}
         </Typography>
+        {focusedNode && (() => {
+          const panelColor = focusedNode.colorOverride ?? PALETTE[focusedNode.colorKey].stroke;
+          const panelLabel = focusedNode.label ?? t(focusedNode.labelKey);
+          return (
+            <Box sx={{
+              width: '100%', pointerEvents: 'all',
+              bgcolor: 'rgba(24,28,34,0.92)',
+              backdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderLeft: `3px solid ${panelColor}`,
+              borderRadius: '0 6px 6px 0',
+              overflow: 'hidden',
+            }}>
+              {/* Header */}
+              <Box
+                onClick={() => setDescPanelOpen(p => !p)}
+                sx={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  px: 1.5, py: 1, cursor: 'pointer', userSelect: 'none',
+                  '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' },
+                }}
+              >
+                <Typography sx={{
+                  color: panelColor, fontWeight: 700, fontSize: '0.78rem', lineHeight: 1.2,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  flex: 1, mr: 1,
+                }}>
+                  {panelLabel}
+                </Typography>
+                <Typography sx={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.6rem', flexShrink: 0 }}>
+                  {descPanelOpen ? '▲' : '▼'}
+                </Typography>
+              </Box>
+              {/* Body */}
+              {descPanelOpen && (
+                <Box sx={{
+                  px: 1.5, pb: 1.5,
+                  maxHeight: 260, overflowY: 'auto',
+                  borderTop: '1px solid rgba(255,255,255,0.07)',
+                  '& p': { color: 'rgba(255,255,255,0.7)', fontSize: '0.75rem', lineHeight: 1.6, m: 0, mb: '4px' },
+                  '& h1,& h2,& h3,& h4': { color: '#e2e8f0', fontWeight: 700, fontSize: '0.8rem', mt: '8px', mb: '4px' },
+                  '& code': { bgcolor: 'rgba(255,255,255,0.1)', px: 0.5, borderRadius: 0.5, fontFamily: 'monospace', fontSize: '0.7rem' },
+                  '& pre': { bgcolor: 'rgba(0,0,0,0.3)', p: '8px', borderRadius: 0.5, overflow: 'auto', my: '4px' },
+                  '& pre code': { bgcolor: 'transparent', p: 0 },
+                  '& ul,& ol': { pl: '20px', color: 'rgba(255,255,255,0.7)', fontSize: '0.75rem', my: '4px' },
+                  '& li': { mb: '2px' },
+                  '& a': { color: '#38bdf8' },
+                  '& strong': { color: '#e2e8f0', fontWeight: 700 },
+                  '& em': { color: 'rgba(255,255,255,0.6)' },
+                  '& blockquote': { borderLeft: '2px solid rgba(255,255,255,0.2)', pl: '8px', ml: 0, color: 'rgba(255,255,255,0.5)', my: '4px' },
+                  '& hr': { borderColor: 'rgba(255,255,255,0.1)', my: '6px' },
+                  '& table': { width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', my: '4px' },
+                  '& th,& td': { border: '1px solid rgba(255,255,255,0.1)', p: '4px 6px', color: 'rgba(255,255,255,0.7)' },
+                  '& th': { bgcolor: 'rgba(255,255,255,0.05)', color: '#e2e8f0' },
+                }}>
+                  {focusedSkillNode?.description ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {focusedSkillNode.description}
+                    </ReactMarkdown>
+                  ) : (
+                    <Typography sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.72rem', fontStyle: 'italic', pt: '8px' }}>
+                      {t('tree.noDescription')}
+                    </Typography>
+                  )}
+                </Box>
+              )}
+            </Box>
+          );
+        })()}
       </Box>
 
       {/* ── Legend overlay (bottom-left) ── */}
@@ -975,7 +1102,7 @@ export default function SkillTree() {
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
             >
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M9 11V3M9 3L5.5 6.5M9 3L12.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M9 3v8M9 11L5.5 7.5M9 11L12.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             </Box>
@@ -989,7 +1116,7 @@ export default function SkillTree() {
               sx={{ all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', color: 'rgba(255,255,255,0.7)', transition: 'color 0.2s, background-color 0.2s', '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } }}
             >
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M9 3v8M9 11L5.5 7.5M9 11L12.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M9 11V3M9 3L5.5 6.5M9 3L12.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M2 13v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             </Box>
@@ -1068,6 +1195,38 @@ export default function SkillTree() {
               }}
             >
               +
+            </Box>
+          </Tooltip>
+        </Box>
+
+        {/* Edit button */}
+        <Box sx={{
+          width: 52, height: 52,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: '1px solid',
+          borderColor: focusedId ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)',
+          borderRadius: 1,
+          bgcolor: focusedId ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)',
+          transition: 'border-color 0.3s, background-color 0.3s',
+        }}>
+          <Tooltip title={focusedId ? t('tree.editNode') : t('tree.selectNodeFirst')} placement="top" arrow>
+            <Box
+              component="button"
+              onClick={focusedId ? openEditDialog : undefined}
+              disabled={!focusedId}
+              sx={{
+                all: 'unset',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: '50%',
+                cursor: focusedId ? 'pointer' : 'not-allowed',
+                color: focusedId ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)',
+                transition: 'color 0.2s, background-color 0.2s',
+                '&:hover': focusedId ? { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' } : {},
+              }}
+            >
+              <svg width="17" height="17" viewBox="0 0 17 17" fill="none">
+                <path d="M12 2.5a1.5 1.5 0 012.12 2.12L5.5 13.24 3 14l.76-2.5L12 2.5z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
             </Box>
           </Tooltip>
         </Box>
@@ -1186,6 +1345,27 @@ export default function SkillTree() {
               </Box>
             </Box>
           </Box>
+          <TextField
+            label={t('tree.nodeDescription')}
+            value={newNodeDescription}
+            onChange={e => setNewNodeDescription(e.target.value)}
+            multiline
+            rows={3}
+            size="small"
+            fullWidth
+            placeholder={t('tree.descriptionPlaceholder')}
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                color: '#e2e8f0',
+                '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.4)' },
+                '&.Mui-focused fieldset': { borderColor: 'rgba(255,255,255,0.5)' },
+              },
+              '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.45)' },
+              '& .MuiInputLabel-root.Mui-focused': { color: 'rgba(255,255,255,0.7)' },
+              '& textarea::placeholder': { color: 'rgba(255,255,255,0.2)', opacity: 1 },
+            }}
+          />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
           <Button
@@ -1208,6 +1388,140 @@ export default function SkillTree() {
             }}
           >
             {t('tree.ok')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Edit Node dialog ── */}
+      <Dialog
+        open={editDialogOpen}
+        onClose={handleEditCancel}
+        PaperProps={{
+          sx: {
+            bgcolor: '#252b34', color: '#e2e8f0',
+            border: '1px solid rgba(255,255,255,0.1)',
+            width: 560, maxWidth: '95vw',
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontSize: '0.95rem', fontWeight: 700, pb: 1 }}>
+          {t('tree.editNode')}
+        </DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: '8px !important' }}>
+          <TextField
+            autoFocus
+            label={t('tree.nodeTitle')}
+            value={editTitle}
+            onChange={e => setEditTitle(e.target.value)}
+            size="small"
+            fullWidth
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                color: '#e2e8f0',
+                '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.4)' },
+                '&.Mui-focused fieldset': { borderColor: 'rgba(255,255,255,0.6)' },
+              },
+              '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.45)' },
+              '& .MuiInputLabel-root.Mui-focused': { color: 'rgba(255,255,255,0.8)' },
+            }}
+          />
+          {/* Description with Write / Preview tabs */}
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.45)', mr: 'auto' }}>
+                {t('tree.nodeDescription')}
+              </Typography>
+              {(['write', 'preview'] as const).map(tab => (
+                <Box
+                  key={tab}
+                  component="button"
+                  onClick={() => setEditTab(tab)}
+                  sx={{
+                    all: 'unset', cursor: 'pointer', fontSize: '0.72rem', px: 1.5, py: 0.5,
+                    borderRadius: 1,
+                    color: editTab === tab ? '#e2e8f0' : 'rgba(255,255,255,0.35)',
+                    bgcolor: editTab === tab ? 'rgba(255,255,255,0.1)' : 'transparent',
+                    border: '1px solid',
+                    borderColor: editTab === tab ? 'rgba(255,255,255,0.2)' : 'transparent',
+                    transition: 'color 0.15s, background-color 0.15s',
+                    '&:hover': { color: '#e2e8f0' },
+                  }}
+                >
+                  {tab === 'write' ? t('tree.editWrite') : t('tree.editPreview')}
+                </Box>
+              ))}
+            </Box>
+            {editTab === 'write' ? (
+              <Box
+                component="textarea"
+                value={editDescription}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditDescription(e.target.value)}
+                placeholder={t('tree.descriptionPlaceholder')}
+                rows={8}
+                sx={{
+                  width: '100%', boxSizing: 'border-box',
+                  bgcolor: 'rgba(0,0,0,0.2)', color: '#e2e8f0',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  borderRadius: 1, p: '10px 12px',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+                  fontSize: '0.8rem', lineHeight: 1.6,
+                  resize: 'vertical', outline: 'none',
+                  '&:focus': { borderColor: 'rgba(255,255,255,0.35)' },
+                  '&::placeholder': { color: 'rgba(255,255,255,0.2)' },
+                }}
+              />
+            ) : (
+              <Box sx={{
+                minHeight: 180, maxHeight: 260, overflowY: 'auto',
+                bgcolor: 'rgba(0,0,0,0.2)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: 1, p: '10px 12px',
+                '& p': { color: 'rgba(255,255,255,0.7)', fontSize: '0.8rem', lineHeight: 1.6, m: 0, mb: '6px' },
+                '& h1,& h2,& h3,& h4': { color: '#e2e8f0', fontWeight: 700, mt: '8px', mb: '4px' },
+                '& code': { bgcolor: 'rgba(255,255,255,0.1)', px: 0.5, borderRadius: 0.5, fontFamily: 'monospace', fontSize: '0.75rem' },
+                '& pre': { bgcolor: 'rgba(0,0,0,0.4)', p: '8px', borderRadius: 0.5, overflow: 'auto', my: '6px' },
+                '& pre code': { bgcolor: 'transparent', p: 0 },
+                '& ul,& ol': { pl: '20px', color: 'rgba(255,255,255,0.7)', fontSize: '0.8rem', my: '4px' },
+                '& a': { color: '#38bdf8' },
+                '& strong': { color: '#e2e8f0', fontWeight: 700 },
+                '& blockquote': { borderLeft: '2px solid rgba(255,255,255,0.2)', pl: '8px', ml: 0, color: 'rgba(255,255,255,0.5)', my: '6px' },
+                '& table': { width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', my: '4px' },
+                '& th,& td': { border: '1px solid rgba(255,255,255,0.1)', p: '4px 8px', color: 'rgba(255,255,255,0.7)' },
+                '& th': { bgcolor: 'rgba(255,255,255,0.05)', color: '#e2e8f0' },
+              }}>
+                {editDescription.trim() ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{editDescription}</ReactMarkdown>
+                ) : (
+                  <Typography sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.78rem', fontStyle: 'italic' }}>
+                    {t('tree.noDescription')}
+                  </Typography>
+                )}
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            onClick={handleEditCancel}
+            size="small"
+            sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: '#fff' } }}
+          >
+            {t('tree.cancel')}
+          </Button>
+          <Button
+            onClick={handleEditConfirm}
+            disabled={!editTitle.trim()}
+            size="small"
+            variant="contained"
+            sx={{
+              bgcolor: 'rgba(255,255,255,0.15)', color: '#e2e8f0',
+              fontWeight: 700,
+              '&:hover': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.3)' },
+            }}
+          >
+            {t('tree.editSave')}
           </Button>
         </DialogActions>
       </Dialog>

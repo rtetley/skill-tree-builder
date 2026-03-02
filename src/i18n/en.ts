@@ -75,6 +75,13 @@ export const en = {
       deleteConfirm: 'Delete',
       undo: 'Undo',
       redo: 'Redo',
+      editNode: 'Edit node',
+      editSave: 'Save',
+      editWrite: 'Write',
+      editPreview: 'Preview',
+      nodeDescription: 'Description',
+      descriptionPlaceholder: 'Optional · supports Markdown',
+      noDescription: 'No description',
     },
   },
 };

@@ -2,6 +2,7 @@ export interface SkillNode {
   id: string;
   labelKey: string;          // i18n key under skillTree.*, or 'custom:…' for user-added nodes
   label?: string;            // raw display label for custom nodes (bypasses i18n)
+  description?: string;      // optional markdown description — never affects the ID or layout
   colorOverride?: string;    // hex color override for custom nodes
   positionOffset?: { x: number; y: number }; // free-drag offset applied on top of layout position
   children?: SkillNode[];
