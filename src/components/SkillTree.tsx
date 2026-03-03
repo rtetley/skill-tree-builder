@@ -771,11 +771,32 @@ export default function SkillTree() {
 
   // ── Export: flat sorted JSON, one line per node for clean git diffs ──────
   const handleExport = useCallback(() => {
+    const SUPPORTED_LANGS = ['en', 'fr'] as const;
+
+    // Resolve a label for a given node in a specific language.
+    // Explicit node.labels override takes priority; then i18n key (built-in nodes);
+    // then the raw label string (custom/imported nodes, EN only).
+    function resolveLabel(node: SkillNode, lng: string): string | undefined {
+      if (node.labels?.[lng]) return node.labels[lng];
+      const translated = i18n.t(node.labelKey, { lng });
+      if (translated !== node.labelKey) return translated; // i18n key resolved successfully
+      if (lng === 'en') return node.label ?? undefined;     // fallback for custom nodes
+      return undefined;
+    }
+
     const flatNodes: ExportNode[] = [];
     function flatten(node: SkillNode, parentId: string | null) {
-      const enLabel = node.labels?.en ?? node.label ?? i18n.t(node.labelKey, { lng: 'en' });
+      // Build a complete labels map for every supported language so that
+      // imported nodes (which lose their original i18n key) still display
+      // correctly in all languages.
+      const labels: Partial<Record<string, string>> = {};
+      for (const lng of SUPPORTED_LANGS) {
+        const val = resolveLabel(node, lng);
+        if (val) labels[lng] = val;
+      }
+      const enLabel = labels.en ?? node.labelKey;
       const entry: ExportNode = { id: node.id, label: enLabel, parentId };
-      if (node.labels && Object.keys(node.labels).length > 0) entry.labels = node.labels;
+      if (Object.keys(labels).length > 0) entry.labels = labels;
       if (node.description) entry.description = node.description;
       if (node.descriptions && Object.keys(node.descriptions).length > 0) entry.descriptions = node.descriptions;
       if (node.colorOverride) entry.colorOverride = node.colorOverride;
