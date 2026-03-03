@@ -535,6 +535,24 @@ export default function SkillTree() {
       setNodeDragOffset(null);
       // Ignore pure clicks (mousedown+mouseup with zero or sub-pixel movement)
       if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+
+      // Freeze all current spring-basis positions so the force-directed simulation
+      // does not re-run after committing the drag, which would pull nodes back
+      // toward equilibrium and undo the manual move.
+      const offsetMap = new Map<string, { x: number; y: number }>();
+      function collectOffsets(node: SkillNode): void {
+        offsetMap.set(node.id, node.positionOffset ?? { x: 0, y: 0 });
+        node.children?.forEach(collectOffsets);
+      }
+      collectOffsets(treeRootRef.current);
+      const newFrozen = new Map<string, { x: number; y: number }>();
+      for (const [nid, datum] of nodeMap) {
+        const off = offsetMap.get(nid) ?? { x: 0, y: 0 };
+        newFrozen.set(nid, { x: datum.x - off.x, y: datum.y - off.y });
+      }
+      setFrozenPositions(newFrozen);
+      setSeedPositions(null);
+
       setTreeRoot(prev => {
         // Collect all IDs that need offsetting: the dragged node + all its descendants
         const draggedIds = new Set<string>();
@@ -561,7 +579,7 @@ export default function SkillTree() {
     }
     dragStartRef.current = null;
     setIsDragging(false);
-  }, [nodeDragOffset]);
+  }, [nodeDragOffset, nodeMap]);
 
   // ── Add-node dialog ──
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1076,7 +1094,7 @@ export default function SkillTree() {
                   '&:hover': { color, textDecoration: 'underline' },
                 }}
               >
-                {t(ancestor.labelKey)}
+                {ancestor.label ?? t(ancestor.labelKey)}
               </Typography>
               <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.2)' }}>/</Typography>
             </Box>
@@ -1087,7 +1105,7 @@ export default function SkillTree() {
             color: PALETTE[focusedNode.colorKey].stroke,
             fontWeight: 700,
           }}>
-            {t(focusedNode.labelKey)}
+            {focusedNode.label ?? t(focusedNode.labelKey)}
           </Typography>
         )}
       </Box>
