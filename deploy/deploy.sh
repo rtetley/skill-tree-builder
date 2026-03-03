@@ -106,4 +106,6 @@ $SSH bash <<REMOTE
   sudo systemctl reload nginx || sudo systemctl start nginx
 REMOTE
 
-info "✅  Deployment complete!  http://${DEPLOY_HOST}"
+info "✅  Deployment complete!  https://${DEPLOY_HOST}"
+warn "Make sure ssl_certificate / ssl_certificate_key in nginx.conf point to valid certificate files."
+warn "Run 'sudo certbot --nginx -d <domain>' on the VM to provision a free Let's Encrypt certificate."
