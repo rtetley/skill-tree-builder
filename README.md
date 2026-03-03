@@ -109,8 +109,11 @@ deploy/
 ### Quick start
 
 ```bash
-# Minimum — pass the VM address via the --host flag
+# Deploy the built app only (default)
 ./deploy/deploy.sh --host 203.0.113.42
+
+# Also install / update the nginx config on the VM
+./deploy/deploy.sh --host 203.0.113.42 --with-nginx
 
 # Full example with all options
 ./deploy/deploy.sh \
@@ -118,7 +121,8 @@ deploy/
   --user ubuntu \
   --key ~/.ssh/my_vm_key \
   --port 22 \
-  --dir /var/www/skill-tree-builder
+  --dir /var/www/skill-tree-builder \
+  --with-nginx
 ```
 
 You can also export the variables instead of passing flags every time:
@@ -137,10 +141,10 @@ export DEPLOY_KEY=~/.ssh/my_vm_key
 | 1 | Runs `yarn build` locally → produces `dist/` |
 | 2 | Creates `REMOTE_DIR` on the VM and sets ownership |
 | 3 | Rsyncs `dist/` to the VM (incremental, deletes stale files) |
-| 4 | Installs nginx on the VM if not already present |
-| 5 | Copies `deploy/nginx.conf` to `/etc/nginx/sites-available/`, enables it, reloads nginx |
+| 4 *(opt-in)* | Installs nginx on the VM if not already present |
+| 5 *(opt-in)* | Copies `deploy/nginx.conf` to `/etc/nginx/sites-available/`, enables it, reloads nginx |
 
-The app is then served at `http://<DEPLOY_HOST>`.
+By default only steps 1–3 run. Pass `--with-nginx` to also configure the web server (steps 4–5).
 
 ### Adding HTTPS
 

@@ -5,17 +5,26 @@
 # Usage:
 #   ./deploy/deploy.sh [options]
 #
-# Required environment variables (or pass as arguments, see --help):
-#   DEPLOY_HOST   Hostname or IP of the target VM
-#   DEPLOY_USER   SSH user on the target VM  (default: deploy)
-#   DEPLOY_KEY    Path to the SSH private key (default: ~/.ssh/id_rsa)
+# Required:
+#   DEPLOY_HOST   Hostname or IP of the target VM  (or --host)
 #
-# What this script does:
-#   1. Builds the app with `yarn build`
-#   2. Copies dist/ to the VM with rsync over SSH
-#   3. Sets correct ownership/permissions on the VM
-#   4. Installs nginx (if not present) and drops the bundled nginx.conf
-#   5. Enables and reloads nginx
+# Options:
+#   --host <host>       VM hostname or IP
+#   --user <user>       SSH user (default: deploy)
+#   --key  <path>       SSH private key (default: ~/.ssh/id_rsa)
+#   --port <port>       SSH port (default: 22)
+#   --dir  <path>       Remote directory to deploy into (default: /var/www/skill-tree-builder)
+#   --with-nginx        Also install/update the bundled nginx.conf on the VM
+#   --help, -h          Show this help
+#
+# What this script does by default:
+#   1. Builds the app locally with `yarn build`
+#   2. Creates REMOTE_DIR on the VM and sets ownership
+#   3. Rsyncs dist/ to the VM (incremental, removes stale files)
+#
+# With --with-nginx it additionally:
+#   4. Installs nginx on the VM via apt if not already present
+#   5. Copies deploy/nginx.conf to /etc/nginx/sites-available/ and reloads nginx
 # =============================================================================
 set -euo pipefail
 
@@ -32,6 +41,7 @@ DEPLOY_PORT="${DEPLOY_PORT:-22}"
 REMOTE_DIR="${REMOTE_DIR:-/var/www/skill-tree-builder}"
 NGINX_CONF_DEST="${NGINX_CONF_DEST:-/etc/nginx/sites-available/skill-tree-builder}"
 NGINX_CONF_LINK="${NGINX_CONF_LINK:-/etc/nginx/sites-enabled/skill-tree-builder}"
+WITH_NGINX=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -43,12 +53,13 @@ show_help() {
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --host)    DEPLOY_HOST="$2"; shift 2 ;;
-    --user)    DEPLOY_USER="$2"; shift 2 ;;
-    --key)     DEPLOY_KEY="$2"; shift 2 ;;
-    --port)    DEPLOY_PORT="$2"; shift 2 ;;
-    --dir)     REMOTE_DIR="$2"; shift 2 ;;
-    --help|-h) show_help ;;
+    --host)        DEPLOY_HOST="$2"; shift 2 ;;
+    --user)        DEPLOY_USER="$2"; shift 2 ;;
+    --key)         DEPLOY_KEY="$2"; shift 2 ;;
+    --port)        DEPLOY_PORT="$2"; shift 2 ;;
+    --dir)         REMOTE_DIR="$2"; shift 2 ;;
+    --with-nginx)  WITH_NGINX=true; shift ;;
+    --help|-h)     show_help ;;
     *) error "Unknown option: $1. Run with --help for usage." ;;
   esac
 done
@@ -78,34 +89,36 @@ rsync -az --delete \
   "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/"
 info "Files synced."
 
-# ── Step 4: Install nginx (idempotent) ────────────────────────────────────────
-info "Ensuring nginx is installed on the VM…"
-$SSH "command -v nginx > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y nginx)"
+# ── Steps 4 & 5: nginx (opt-in) ───────────────────────────────────────────────
+if [[ "$WITH_NGINX" == true ]]; then
+  info "Ensuring nginx is installed on the VM…"
+  $SSH "command -v nginx > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y nginx)"
 
-# ── Step 5: Install nginx config ─────────────────────────────────────────────
-info "Installing nginx configuration…"
-# Upload the config
-rsync -az \
-  -e "$RSYNC_SSH" \
-  "$SCRIPT_DIR/nginx.conf" \
-  "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/skill-tree-builder.nginx.conf"
+  info "Installing nginx configuration…"
+  rsync -az \
+    -e "$RSYNC_SSH" \
+    "$SCRIPT_DIR/nginx.conf" \
+    "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/skill-tree-builder.nginx.conf"
 
-$SSH bash <<REMOTE
-  set -euo pipefail
-  sudo mv /tmp/skill-tree-builder.nginx.conf ${NGINX_CONF_DEST}
+  $SSH bash <<REMOTE
+    set -euo pipefail
+    sudo mv /tmp/skill-tree-builder.nginx.conf ${NGINX_CONF_DEST}
 
-  # Update the document root in the config to match REMOTE_DIR
-  sudo sed -i "s|root /var/www/skill-tree-builder;|root ${REMOTE_DIR};|g" ${NGINX_CONF_DEST}
+    # Update the document root in the config to match REMOTE_DIR
+    sudo sed -i "s|root /var/www/skill-tree-builder;|root ${REMOTE_DIR};|g" ${NGINX_CONF_DEST}
 
-  # Enable the site (remove default if present to avoid conflicts)
-  sudo ln -sfn ${NGINX_CONF_DEST} ${NGINX_CONF_LINK}
-  sudo rm -f /etc/nginx/sites-enabled/default
+    # Enable the site (remove default if present to avoid conflicts)
+    sudo ln -sfn ${NGINX_CONF_DEST} ${NGINX_CONF_LINK}
+    sudo rm -f /etc/nginx/sites-enabled/default
 
-  sudo nginx -t
-  sudo systemctl enable nginx
-  sudo systemctl reload nginx || sudo systemctl start nginx
+    sudo nginx -t
+    sudo systemctl enable nginx
+    sudo systemctl reload nginx || sudo systemctl start nginx
 REMOTE
 
-info "✅  Deployment complete!  https://${DEPLOY_HOST}"
-warn "Make sure ssl_certificate / ssl_certificate_key in nginx.conf point to valid certificate files."
-warn "Run 'sudo certbot --nginx -d <domain>' on the VM to provision a free Let's Encrypt certificate."
+  info "nginx configured and reloaded."
+  warn "Make sure ssl_certificate / ssl_certificate_key in nginx.conf point to valid certificate files."
+  warn "Run 'sudo certbot --nginx -d <domain>' on the VM to provision a free Let's Encrypt certificate."
+fi
+
+info "✅  Deployment complete!  App is in ${REMOTE_DIR} on ${DEPLOY_HOST}"
