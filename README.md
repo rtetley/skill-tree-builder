@@ -68,6 +68,9 @@ yarn lint
 ## Project Structure
 
 ```
+deploy/
+├── deploy.sh                # Build-and-deploy script (run locally)
+└── nginx.conf               # nginx server block template
 src/
 ├── App.tsx                  # Root component
 ├── main.tsx                 # Entry point – initialises DSFR & i18n
@@ -78,8 +81,77 @@ src/
 │   └── skillTree.ts         # Default tree data (SkillNode interface + root definition)
 └── i18n/
     ├── index.ts             # i18next initialisation
-    └── en.ts                # English translations
+    ├── en.ts                # English translations
+    └── fr.ts                # French translations
 ```
+
+## Deployment
+
+The `deploy/` directory contains a shell script and an nginx configuration to host the app on any Debian/Ubuntu VM.
+
+```
+deploy/
+├── deploy.sh    # Build-and-push script (runs locally)
+└── nginx.conf   # nginx server block (copied to the VM)
+```
+
+### Prerequisites on your local machine
+
+- `yarn` and Node.js ≥ 18 (to build)
+- `rsync` and `ssh`
+- An SSH key authorised on the target VM (`~/.ssh/id_rsa` by default)
+
+### Prerequisites on the VM
+
+- Debian or Ubuntu (the script installs nginx via `apt` if it is not already present)
+- The deploy user must have **passwordless `sudo`** (or nginx must already be installed and the user must own `/var/www/`)
+
+### Quick start
+
+```bash
+# Minimum — pass the VM address via the --host flag
+./deploy/deploy.sh --host 203.0.113.42
+
+# Full example with all options
+./deploy/deploy.sh \
+  --host 203.0.113.42 \
+  --user ubuntu \
+  --key ~/.ssh/my_vm_key \
+  --port 22 \
+  --dir /var/www/skill-tree-builder
+```
+
+You can also export the variables instead of passing flags every time:
+
+```bash
+export DEPLOY_HOST=203.0.113.42
+export DEPLOY_USER=ubuntu
+export DEPLOY_KEY=~/.ssh/my_vm_key
+./deploy/deploy.sh
+```
+
+### What the script does
+
+| Step | Action |
+|---|---|
+| 1 | Runs `yarn build` locally → produces `dist/` |
+| 2 | Creates `REMOTE_DIR` on the VM and sets ownership |
+| 3 | Rsyncs `dist/` to the VM (incremental, deletes stale files) |
+| 4 | Installs nginx on the VM if not already present |
+| 5 | Copies `deploy/nginx.conf` to `/etc/nginx/sites-available/`, enables it, reloads nginx |
+
+The app is then served at `http://<DEPLOY_HOST>`.
+
+### Adding HTTPS
+
+Point a domain at the VM and run [Certbot](https://certbot.eff.org/) after deployment:
+
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.example.com
+```
+
+---
 
 ## Customising the Default Tree
 
