@@ -67,9 +67,12 @@ done
 [[ -z "${DEPLOY_HOST:-}" ]] && error "DEPLOY_HOST is not set. Pass --host <ip> or export DEPLOY_HOST=<ip>"
 [[ -f "$DEPLOY_KEY" ]]       || error "SSH key not found at $DEPLOY_KEY"
 
-SSH_OPTS="-i $DEPLOY_KEY -p $DEPLOY_PORT -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-SSH="ssh $SSH_OPTS ${DEPLOY_USER}@${DEPLOY_HOST}"
-RSYNC_SSH="ssh $SSH_OPTS"
+SSH_ARGS=(-i "$DEPLOY_KEY" -p "$DEPLOY_PORT"
+          -o StrictHostKeyChecking=accept-new
+          -o BatchMode=yes)
+
+# Wrapper: run a command on the remote host via SSH
+run_ssh() { ssh "${SSH_ARGS[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
 
 # ── Step 1: Build ─────────────────────────────────────────────────────────────
 info "Building the application…"
@@ -78,13 +81,13 @@ yarn build
 info "Build complete → dist/"
 
 # ── Step 2: Ensure remote directory exists ────────────────────────────────────
-info "Preparing remote directory $REMOTE_DIR…"
-$SSH "sudo mkdir -p $REMOTE_DIR && sudo chown ${DEPLOY_USER}:${DEPLOY_USER} $REMOTE_DIR"
+info "Preparing remote directory ${REMOTE_DIR}…"
+run_ssh "sudo mkdir -p '${REMOTE_DIR}' && sudo chown '${DEPLOY_USER}:${DEPLOY_USER}' '${REMOTE_DIR}'"
 
 # ── Step 3: Sync dist/ to VM ──────────────────────────────────────────────────
 info "Syncing dist/ to ${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}…"
 rsync -az --delete \
-  -e "$RSYNC_SSH" \
+  -e "ssh ${SSH_ARGS[*]}" \
   "$REPO_ROOT/dist/" \
   "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/"
 info "Files synced."
@@ -92,15 +95,15 @@ info "Files synced."
 # ── Steps 4 & 5: nginx (opt-in) ───────────────────────────────────────────────
 if [[ "$WITH_NGINX" == true ]]; then
   info "Ensuring nginx is installed on the VM…"
-  $SSH "command -v nginx > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y nginx)"
+  run_ssh "command -v nginx > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y nginx)"
 
   info "Installing nginx configuration…"
   rsync -az \
-    -e "$RSYNC_SSH" \
+    -e "ssh ${SSH_ARGS[*]}" \
     "$SCRIPT_DIR/nginx.conf" \
     "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/skill-tree-builder.nginx.conf"
 
-  $SSH bash <<REMOTE
+  run_ssh bash <<REMOTE
     set -euo pipefail
     sudo mv /tmp/skill-tree-builder.nginx.conf ${NGINX_CONF_DEST}
 
