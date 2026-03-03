@@ -3,6 +3,7 @@ import {
   Box, Typography,
   Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, Button, Tooltip,
+  Menu, MenuItem,
 } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -49,6 +50,7 @@ const VH = 900;
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface NodeDatum {
   id: string; labelKey: string; label?: string;
+  labels?: Partial<Record<string, string>>;
   x: number; y: number;
   depth: number; colorKey: PKey; colorOverride?: string;
 }
@@ -63,7 +65,9 @@ interface ExportNode {
   id: string;
   label: string;
   parentId: string | null;
+  labels?: Partial<Record<string, string>>;
   description?: string;
+  descriptions?: Partial<Record<string, string>>;
   colorOverride?: string;
   position?: { x: number; y: number }; // final visual position (spring + manual offset)
 }
@@ -86,6 +90,7 @@ function buildLayout(
     id: string; depth: number;
     colorKey: PKey; colorOverride?: string;
     labelKey: string; label?: string;
+    labels?: Partial<Record<string, string>>;
     positionOffset?: { x: number; y: number };
   }
   const rawNodes: RawNode[] = [];
@@ -97,7 +102,7 @@ function buildLayout(
   ) {
     const co = node.colorOverride ?? inheritedOverride;
     rawNodes.push({ id: node.id, depth, colorKey, colorOverride: co,
-      labelKey: node.labelKey, label: node.label, positionOffset: node.positionOffset });
+      labelKey: node.labelKey, label: node.label, labels: node.labels, positionOffset: node.positionOffset });
     (node.children ?? []).forEach(child => {
       rawEdges.push({ parentId: node.id, childId: child.id });
       const childCk = depth === 0 ? ((CAT_KEYS[child.id] ?? 'default') as PKey) : colorKey;
@@ -143,7 +148,7 @@ function buildLayout(
         const p  = pos.get(info.id)!;
         const ox = info.positionOffset?.x ?? 0;
         const oy = info.positionOffset?.y ?? 0;
-        return { id: info.id, labelKey: info.labelKey, label: info.label,
+        return { id: info.id, labelKey: info.labelKey, label: info.label, labels: info.labels,
           x: p.x + ox, y: p.y + oy, depth: info.depth, colorKey: info.colorKey, colorOverride: info.colorOverride };
       });
       const posMap  = new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }]));
@@ -268,7 +273,7 @@ function buildLayout(
     const p  = pos.get(info.id)!;
     const ox = info.positionOffset?.x ?? 0;
     const oy = info.positionOffset?.y ?? 0;
-    return { id: info.id, labelKey: info.labelKey, label: info.label,
+    return { id: info.id, labelKey: info.labelKey, label: info.label, labels: info.labels,
       x: p.x + ox, y: p.y + oy,
       depth: info.depth, colorKey: info.colorKey, colorOverride: info.colorOverride };
   });
@@ -389,7 +394,15 @@ function SkillNodeEl({ node, isFocused, isChild, isDraggingNode, dragDx, dragDy,
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function SkillTree() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
+
+  /** Resolve the display label for any node datum or skill node in the current language */
+  const getNodeLabel = useCallback(
+    (node: { labelKey: string; label?: string; labels?: Partial<Record<string, string>> }) =>
+      node.labels?.[lang] ?? node.label ?? t(node.labelKey),
+    [lang, t],
+  );
 
   // ── Mutable tree state ──
   const [treeRoot, setTreeRootState] = useState<SkillNode>(initialSkillTreeRoot);
@@ -582,29 +595,41 @@ export default function SkillTree() {
   }, [nodeDragOffset, nodeMap]);
 
   // ── Add-node dialog ──
+  const [langMenuAnchor, setLangMenuAnchor] = useState<HTMLElement | null>(null);
+
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [newNodeTitle, setNewNodeTitle] = useState('');
+  const [newNodeTitles, setNewNodeTitles] = useState<Record<'en' | 'fr', string>>({ en: '', fr: '' });
   const [newNodeColor, setNewNodeColor] = useState('#94a3b8');
-  const [newNodeDescription, setNewNodeDescription] = useState('');
+  const [newNodeDescriptions, setNewNodeDescriptions] = useState<Record<'en' | 'fr', string>>({ en: '', fr: '' });
+  const [addLangTab, setAddLangTab] = useState<'en' | 'fr'>('en');
 
   const openAddDialog = useCallback(() => {
     const focused = nodeMap.get(focusedId);
     const parentColor = focused?.colorOverride ?? PALETTE[focused?.colorKey ?? 'default'].stroke;
-    setNewNodeTitle('');
+    setNewNodeTitles({ en: '', fr: '' });
     setNewNodeColor(parentColor);
-    setNewNodeDescription('');
+    setNewNodeDescriptions({ en: '', fr: '' });
+    setAddLangTab(lang as 'en' | 'fr');
     setDialogOpen(true);
-  }, [focusedId, nodeMap]);
+  }, [focusedId, nodeMap, lang]);
 
   const handleAddNodeConfirm = useCallback(() => {
-    if (!newNodeTitle.trim()) return;
+    if (!newNodeTitles.en.trim()) return;
     const id = `custom_${Date.now()}`;
+    const labels: Partial<Record<string, string>> = {};
+    if (newNodeTitles.en.trim()) labels.en = newNodeTitles.en.trim();
+    if (newNodeTitles.fr.trim()) labels.fr = newNodeTitles.fr.trim();
+    const descriptions: Partial<Record<string, string>> = {};
+    if (newNodeDescriptions.en.trim()) descriptions.en = newNodeDescriptions.en.trim();
+    if (newNodeDescriptions.fr.trim()) descriptions.fr = newNodeDescriptions.fr.trim();
     const newNode: SkillNode = {
       id,
       labelKey: `custom:${id}`,
-      label: newNodeTitle.trim(),
+      label: newNodeTitles.en.trim(),
+      labels: Object.keys(labels).length > 0 ? labels : undefined,
       colorOverride: newNodeColor,
-      description: newNodeDescription.trim() || undefined,
+      description: newNodeDescriptions.en.trim() || undefined,
+      descriptions: Object.keys(descriptions).length > 0 ? descriptions : undefined,
     };
 
     // Freeze all existing nodes so the spring simulation only places the new node,
@@ -635,7 +660,7 @@ export default function SkillTree() {
     setTreeRoot(prev => insertChild(prev));
     setFocusedId(id);
     setDialogOpen(false);
-  }, [focusedId, newNodeTitle, newNodeColor, newNodeDescription, nodeMap, treeRoot]);
+  }, [focusedId, newNodeTitles, newNodeColor, newNodeDescriptions, nodeMap, treeRoot]);
 
   const handleAddNodeCancel = useCallback(() => {
     setDialogOpen(false);
@@ -643,34 +668,52 @@ export default function SkillTree() {
 
   // ── Edit-node dialog ───────────────────────────────────────────────────────────────────────
   const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [editTitle, setEditTitle] = useState('');
-  const [editDescription, setEditDescription] = useState('');
+  const [editTitles, setEditTitles] = useState<Record<'en' | 'fr', string>>({ en: '', fr: '' });
+  const [editDescriptions, setEditDescriptions] = useState<Record<'en' | 'fr', string>>({ en: '', fr: '' });
+  const [editLangTab, setEditLangTab] = useState<'en' | 'fr'>('en');
   const [editTab, setEditTab] = useState<'write' | 'preview'>('write');
 
   const openEditDialog = useCallback(() => {
     if (!focusedId) return;
     const node = findNodeById(treeRoot, focusedId);
     if (!node) return;
-    const label = node.label ?? t(node.labelKey);
-    setEditTitle(label);
-    setEditDescription(node.description ?? '');
+    const enLabel = node.labels?.en ?? node.label ?? i18n.t(node.labelKey, { lng: 'en' });
+    const frLabel = node.labels?.fr ?? i18n.t(node.labelKey, { lng: 'fr' });
+    setEditTitles({ en: enLabel, fr: frLabel });
+    setEditDescriptions({
+      en: node.descriptions?.en ?? node.description ?? '',
+      fr: node.descriptions?.fr ?? '',
+    });
+    setEditLangTab(lang as 'en' | 'fr');
     setEditTab('write');
     setEditDialogOpen(true);
-  }, [focusedId, treeRoot, t]);
+  }, [focusedId, treeRoot, i18n, lang]);
 
   const handleEditConfirm = useCallback(() => {
-    if (!editTitle.trim()) return;
+    if (!editTitles.en.trim()) return;
     setTreeRoot(prev => {
       function updateNode(node: SkillNode): SkillNode {
         if (node.id === focusedId) {
-          return { ...node, label: editTitle.trim(), description: editDescription.trim() || undefined };
+          const labels: Partial<Record<string, string>> = {};
+          if (editTitles.en.trim()) labels.en = editTitles.en.trim();
+          if (editTitles.fr.trim()) labels.fr = editTitles.fr.trim();
+          const descriptions: Partial<Record<string, string>> = {};
+          if (editDescriptions.en.trim()) descriptions.en = editDescriptions.en.trim();
+          if (editDescriptions.fr.trim()) descriptions.fr = editDescriptions.fr.trim();
+          return {
+            ...node,
+            label: editTitles.en.trim(),
+            labels: Object.keys(labels).length > 0 ? labels : undefined,
+            description: editDescriptions.en.trim() || undefined,
+            descriptions: Object.keys(descriptions).length > 0 ? descriptions : undefined,
+          };
         }
         return { ...node, children: node.children?.map(updateNode) };
       }
       return updateNode(prev);
     });
     setEditDialogOpen(false);
-  }, [focusedId, editTitle, editDescription]);
+  }, [focusedId, editTitles, editDescriptions]);
 
   const handleEditCancel = useCallback(() => {
     setEditDialogOpen(false);
@@ -730,9 +773,11 @@ export default function SkillTree() {
   const handleExport = useCallback(() => {
     const flatNodes: ExportNode[] = [];
     function flatten(node: SkillNode, parentId: string | null) {
-      const label = node.label ?? t(node.labelKey);
-      const entry: ExportNode = { id: node.id, label, parentId };
+      const enLabel = node.labels?.en ?? node.label ?? i18n.t(node.labelKey, { lng: 'en' });
+      const entry: ExportNode = { id: node.id, label: enLabel, parentId };
+      if (node.labels && Object.keys(node.labels).length > 0) entry.labels = node.labels;
       if (node.description) entry.description = node.description;
+      if (node.descriptions && Object.keys(node.descriptions).length > 0) entry.descriptions = node.descriptions;
       if (node.colorOverride) entry.colorOverride = node.colorOverride;
       // Save the final visual position (spring position + positionOffset already baked in)
       // so import can warm-start the spring from exactly these coordinates.
@@ -758,7 +803,7 @@ export default function SkillTree() {
     a.download = `skill-tree-${treeId.slice(0, 8)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [treeRoot, treeId, t, nodeMap]);
+  }, [treeRoot, treeId, i18n, nodeMap]);
 
   // ── Import: restore tree + layout from exported JSON ─────────────────────
   const handleImportFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -778,8 +823,10 @@ export default function SkillTree() {
           const en = nodeList.find(n => n.id === id)!;
           const children = nodeList.filter(n => n.parentId === id).map(n => buildNode(n.id));
           const node: SkillNode = { id: en.id, labelKey: `imported:${en.id}`, label: en.label, children };
+          if (en.labels) node.labels = en.labels;
           if (en.colorOverride) node.colorOverride = en.colorOverride;
           if (en.description) node.description = en.description;
+          if (en.descriptions) node.descriptions = en.descriptions;
           // No positionOffset: positions are passed as seedPositions instead
           return node;
         }
@@ -1034,7 +1081,7 @@ export default function SkillTree() {
                     dragDy={ddy}
                     onNodeMouseDown={handleNodeMouseDown}
                     onClick={() => handleNodeClick(n)}
-                    label={n.label ?? t(n.labelKey)}
+                    label={getNodeLabel(n)}
                     isAttachMode={!!pendingCut}
                     isAttachable={!!pendingCut && !pendingSubtreeIds.has(n.id)}
                   />
@@ -1094,7 +1141,7 @@ export default function SkillTree() {
                   '&:hover': { color, textDecoration: 'underline' },
                 }}
               >
-                {ancestor.label ?? t(ancestor.labelKey)}
+                {getNodeLabel(ancestor)}
               </Typography>
               <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.2)' }}>/</Typography>
             </Box>
@@ -1105,7 +1152,7 @@ export default function SkillTree() {
             color: PALETTE[focusedNode.colorKey].stroke,
             fontWeight: 700,
           }}>
-            {focusedNode.label ?? t(focusedNode.labelKey)}
+            {getNodeLabel(focusedNode)}
           </Typography>
         )}
       </Box>
@@ -1122,7 +1169,7 @@ export default function SkillTree() {
         </Typography>
         {focusedNode && (() => {
           const panelColor = focusedNode.colorOverride ?? PALETTE[focusedNode.colorKey].stroke;
-          const panelLabel = focusedNode.label ?? t(focusedNode.labelKey);
+          const panelLabel = getNodeLabel(focusedNode);
           return (
             <Box sx={{
               width: '100%', pointerEvents: 'all',
@@ -1175,15 +1222,16 @@ export default function SkillTree() {
                   '& th,& td': { border: '1px solid rgba(255,255,255,0.1)', p: '4px 6px', color: 'rgba(255,255,255,0.7)' },
                   '& th': { bgcolor: 'rgba(255,255,255,0.05)', color: '#e2e8f0' },
                 }}>
-                  {focusedSkillNode?.description ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {focusedSkillNode.description}
-                    </ReactMarkdown>
-                  ) : (
-                    <Typography sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.72rem', fontStyle: 'italic', pt: '8px' }}>
-                      {t('tree.noDescription')}
-                    </Typography>
-                  )}
+                  {(() => {
+                    const desc = focusedSkillNode?.descriptions?.[lang] ?? focusedSkillNode?.description;
+                    return desc ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{desc}</ReactMarkdown>
+                    ) : (
+                      <Typography sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.72rem', fontStyle: 'italic', pt: '8px' }}>
+                        {t('tree.noDescription')}
+                      </Typography>
+                    );
+                  })()}
                 </Box>
               )}
             </Box>
@@ -1225,6 +1273,65 @@ export default function SkillTree() {
         position: 'absolute', bottom: 20, right: 24,
         display: 'flex', gap: 1, alignItems: 'center',
       }}>
+        {/* Language selector */}
+        <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 1, bgcolor: 'rgba(255,255,255,0.04)' }}>
+          <Tooltip title={lang === 'fr' ? 'English / Français' : 'English / Français'} placement="top" arrow>
+            <Box
+              component="button"
+              onClick={(e: React.MouseEvent<HTMLElement>) => setLangMenuAnchor(e.currentTarget)}
+              sx={{
+                all: 'unset', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: '50%', cursor: 'pointer',
+                color: 'rgba(255,255,255,0.7)',
+                fontWeight: 700, fontSize: '0.7rem', letterSpacing: '0.05em',
+                transition: 'color 0.2s, background-color 0.2s',
+                '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.08)' },
+              }}
+            >
+              {lang.toUpperCase()}
+            </Box>
+          </Tooltip>
+        </Box>
+        <Menu
+          anchorEl={langMenuAnchor}
+          open={!!langMenuAnchor}
+          onClose={() => setLangMenuAnchor(null)}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          transformOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+          slotProps={{
+            paper: {
+              sx: {
+                bgcolor: '#252b34', border: '1px solid rgba(255,255,255,0.12)',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                minWidth: 140,
+              },
+            },
+          }}
+        >
+          {([['en', 'English'], ['fr', 'Français']] as const).map(([code, name]) => (
+            <MenuItem
+              key={code}
+              selected={lang === code}
+              onClick={() => { i18n.changeLanguage(code); setLangMenuAnchor(null); }}
+              sx={{
+                fontSize: '0.82rem', color: lang === code ? '#e2e8f0' : 'rgba(255,255,255,0.55)',
+                fontWeight: lang === code ? 700 : 400,
+                bgcolor: lang === code ? 'rgba(255,255,255,0.07)' : 'transparent',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.1)', color: '#e2e8f0' },
+                display: 'flex', gap: 1.5, alignItems: 'center',
+              }}
+            >
+              <Box component="span" sx={{ fontSize: '0.7rem', fontWeight: 700, opacity: 0.5, minWidth: 22 }}>
+                {code.toUpperCase()}
+              </Box>
+              {name}
+            </MenuItem>
+          ))}
+        </Menu>
+
+        {/* Separator */}
+        <Box sx={{ width: '1px', height: 32, bgcolor: 'rgba(255,255,255,0.1)', mx: 0.5 }} />
+
         {/* Undo button */}
         <Box sx={{ width: 52, height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid', borderColor: canUndo ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)', borderRadius: 1, bgcolor: canUndo ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.01)', transition: 'border-color 0.3s, background-color 0.3s' }}>
           <Tooltip title={t('tree.undo')} placement="top" arrow>
@@ -1455,11 +1562,33 @@ export default function SkillTree() {
           {t('tree.addNode')}
         </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: '8px !important' }}>
+          {/* Language tabs */}
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            {(['en', 'fr'] as const).map(l => (
+              <Box
+                key={l}
+                component="button"
+                onClick={() => setAddLangTab(l)}
+                sx={{
+                  all: 'unset', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 700,
+                  px: 1.5, py: 0.5, borderRadius: 1, letterSpacing: 0.5,
+                  color: addLangTab === l ? '#e2e8f0' : 'rgba(255,255,255,0.35)',
+                  bgcolor: addLangTab === l ? 'rgba(255,255,255,0.1)' : 'transparent',
+                  border: '1px solid',
+                  borderColor: addLangTab === l ? 'rgba(255,255,255,0.2)' : 'transparent',
+                  transition: 'color 0.15s, background-color 0.15s',
+                  '&:hover': { color: '#e2e8f0' },
+                }}
+              >
+                {l.toUpperCase()}
+              </Box>
+            ))}
+          </Box>
           <TextField
             autoFocus
             label={t('tree.nodeTitle')}
-            value={newNodeTitle}
-            onChange={e => setNewNodeTitle(e.target.value)}
+            value={newNodeTitles[addLangTab]}
+            onChange={e => setNewNodeTitles(prev => ({ ...prev, [addLangTab]: e.target.value }))}
             onKeyDown={e => { if (e.key === 'Enter') handleAddNodeConfirm(); }}
             size="small"
             fullWidth
@@ -1514,8 +1643,8 @@ export default function SkillTree() {
           </Box>
           <TextField
             label={t('tree.nodeDescription')}
-            value={newNodeDescription}
-            onChange={e => setNewNodeDescription(e.target.value)}
+            value={newNodeDescriptions[addLangTab]}
+            onChange={e => setNewNodeDescriptions(prev => ({ ...prev, [addLangTab]: e.target.value }))}
             multiline
             rows={3}
             size="small"
@@ -1544,7 +1673,7 @@ export default function SkillTree() {
           </Button>
           <Button
             onClick={handleAddNodeConfirm}
-            disabled={!newNodeTitle.trim()}
+            disabled={!newNodeTitles.en.trim()}
             size="small"
             variant="contained"
             sx={{
@@ -1575,11 +1704,33 @@ export default function SkillTree() {
           {t('tree.editNode')}
         </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: '8px !important' }}>
+          {/* Language tabs */}
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            {(['en', 'fr'] as const).map(l => (
+              <Box
+                key={l}
+                component="button"
+                onClick={() => { setEditLangTab(l); setEditTab('write'); }}
+                sx={{
+                  all: 'unset', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 700,
+                  px: 1.5, py: 0.5, borderRadius: 1, letterSpacing: 0.5,
+                  color: editLangTab === l ? '#e2e8f0' : 'rgba(255,255,255,0.35)',
+                  bgcolor: editLangTab === l ? 'rgba(255,255,255,0.1)' : 'transparent',
+                  border: '1px solid',
+                  borderColor: editLangTab === l ? 'rgba(255,255,255,0.2)' : 'transparent',
+                  transition: 'color 0.15s, background-color 0.15s',
+                  '&:hover': { color: '#e2e8f0' },
+                }}
+              >
+                {l.toUpperCase()}
+              </Box>
+            ))}
+          </Box>
           <TextField
             autoFocus
             label={t('tree.nodeTitle')}
-            value={editTitle}
-            onChange={e => setEditTitle(e.target.value)}
+            value={editTitles[editLangTab]}
+            onChange={e => setEditTitles(prev => ({ ...prev, [editLangTab]: e.target.value }))}
             size="small"
             fullWidth
             sx={{
@@ -1622,8 +1773,8 @@ export default function SkillTree() {
             {editTab === 'write' ? (
               <Box
                 component="textarea"
-                value={editDescription}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditDescription(e.target.value)}
+                value={editDescriptions[editLangTab]}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditDescriptions(prev => ({ ...prev, [editLangTab]: e.target.value }))}
                 placeholder={t('tree.descriptionPlaceholder')}
                 rows={8}
                 sx={{
@@ -1657,8 +1808,8 @@ export default function SkillTree() {
                 '& th,& td': { border: '1px solid rgba(255,255,255,0.1)', p: '4px 8px', color: 'rgba(255,255,255,0.7)' },
                 '& th': { bgcolor: 'rgba(255,255,255,0.05)', color: '#e2e8f0' },
               }}>
-                {editDescription.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{editDescription}</ReactMarkdown>
+                {editDescriptions[editLangTab].trim() ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{editDescriptions[editLangTab]}</ReactMarkdown>
                 ) : (
                   <Typography sx={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.78rem', fontStyle: 'italic' }}>
                     {t('tree.noDescription')}
@@ -1678,7 +1829,7 @@ export default function SkillTree() {
           </Button>
           <Button
             onClick={handleEditConfirm}
-            disabled={!editTitle.trim()}
+            disabled={!editTitles.en.trim()}
             size="small"
             variant="contained"
             sx={{
@@ -1710,7 +1861,7 @@ export default function SkillTree() {
         </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.65)' }}>
-            {t('tree.deleteConfirmBody', { name: nodeMap.get(focusedId ?? '')?.label ?? t((nodeMap.get(focusedId ?? '')?.labelKey) ?? '') })}
+            {t('tree.deleteConfirmBody', { name: (() => { const n = nodeMap.get(focusedId ?? ''); return n ? getNodeLabel(n) : ''; })() })}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>

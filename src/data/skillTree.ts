@@ -1,8 +1,10 @@
 export interface SkillNode {
   id: string;
   labelKey: string;          // i18n key under skillTree.*, or 'custom:…' for user-added nodes
-  label?: string;            // raw display label for custom nodes (bypasses i18n)
-  description?: string;      // optional markdown description — never affects the ID or layout
+  label?: string;            // backward-compat EN label for custom nodes (bypasses i18n)
+  labels?: Partial<Record<string, string>>; // per-language label overrides, e.g. { en: '…', fr: '…' }
+  description?: string;      // backward-compat EN markdown description
+  descriptions?: Partial<Record<string, string>>; // per-language descriptions
   colorOverride?: string;    // hex color override for custom nodes
   positionOffset?: { x: number; y: number }; // free-drag offset applied on top of layout position
   children?: SkillNode[];
